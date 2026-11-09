@@ -1,0 +1,3188 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SIMPASI - Sistem Perencanaan dan Analisis Simpang APILL (PKJI 2023)</title>
+  
+  <!-- Tailwind CSS -->
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            untidar: {
+              yellow: '#F59E0B',
+              blue: '#1E3A8A',
+              lightBlue: '#3B82F6',
+              navy: '#0F172A'
+            }
+          }
+        }
+      }
+    }
+  </script>
+
+  <!-- React, ReactDOM & Babel -->
+  <script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+  <script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+
+  <!-- SheetJS (xlsx) for full Excel export -->
+  <script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+
+  <!-- Canvas Confetti -->
+  <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.9.3/dist/confetti.browser.min.js"></script>
+
+  <!-- Font Awesome Icons -->
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css" />
+
+  <style>
+    @media print {
+      body {
+        background: white !important;
+        color: black !important;
+      }
+      .no-print {
+        display: none !important;
+      }
+      .print-only {
+        display: block !important;
+      }
+      .page-break {
+        page-break-after: always;
+      }
+      .table-pkji {
+        border-collapse: collapse !important;
+        width: 100% !important;
+      }
+      .table-pkji th, .table-pkji td {
+        border: 1px solid #111 !important;
+        padding: 4px 6px !important;
+        color: #000 !important;
+      }
+    }
+    
+    /* Custom Scrollbar */
+    ::-webkit-scrollbar {
+      width: 8px;
+      height: 8px;
+    }
+    ::-webkit-scrollbar-track {
+      background: rgba(0,0,0,0.05);
+    }
+    .dark ::-webkit-scrollbar-track {
+      background: rgba(255,255,255,0.05);
+    }
+    ::-webkit-scrollbar-thumb {
+      background: rgba(100,116,139,0.4);
+      border-radius: 4px;
+    }
+    ::-webkit-scrollbar-thumb:hover {
+      background: rgba(100,116,139,0.7);
+    }
+  </style>
+</head>
+<body class="bg-slate-50 text-slate-800 dark:bg-slate-950 dark:text-slate-100 min-h-screen transition-colors duration-200">
+  <div id="root"></div>
+
+  <script type="text/babel">
+    const { useState, useEffect, useMemo, useRef } = React;
+
+    // --- PKJI 2023 REFERENCE CONSTANTS & PARAMETERS ---
+    const CITY_SIZE_FACTORS = {
+      "> 3.0 Juta": { factor: 1.05, desc: "Kota Metropolitan (> 3.0 Juta Jiwa)" },
+      "1.0 - 3.0 Juta": { factor: 1.00, desc: "Kota Sangat Besar (1.0 - 3.0 Juta Jiwa)" },
+      "0.5 - 1.0 Juta": { factor: 0.94, desc: "Kota Besar (0.5 - 1.0 Juta Jiwa)" },
+      "0.1 - 0.5 Juta": { factor: 0.88, desc: "Kota Sedang (0.1 - 0.5 Juta Jiwa, cth: Magelang)" },
+      "< 0.1 Juta": { factor: 0.82, desc: "Kota Kecil (< 0.1 Juta Jiwa)" }
+    };
+
+    // Environmental / Side Friction Factors (Tipe Lingkungan x Hambatan Samping)
+    const SIDE_FRICTION_MATRIX = {
+      COM: { // Komersial
+        VL: 1.00, L: 0.96, M: 0.92, H: 0.88, VH: 0.84
+      },
+      RES: { // Permukiman
+        VL: 1.00, L: 0.97, M: 0.94, H: 0.90, VH: 0.86
+      },
+      RA: { // Akses Terbatas
+        VL: 1.00, L: 0.99, M: 0.97, H: 0.94, VH: 0.90
+      }
+    };
+
+    // Passenger Car Equivalents (EMP / smp) PKJI 2023
+    const EMP_PKJI = {
+      P: { KR: 1.0, KB: 1.30, SM: 0.20, KT: 0.0 }, // Terlindung (Protected)
+      O: { KR: 1.0, KB: 1.30, SM: 0.40, KT: 0.0 }  // Terlawan (Opposed)
+    };
+
+    // Default Intersection Data (Magelang Case Study)
+    const DEFAULT_DATA = {
+      project: {
+        intersectionName: "Simpang 4 Lengan Canguk / Tuguran",
+        city: "Kota Magelang, Jawa Tengah",
+        analyzer: "Laboratorium Rekayasa Transportasi - UNTIDAR",
+        date: "2026-11-09",
+        junctionType: "4-WAY", // '4-WAY' or '3-WAY'
+        tJunctionOmitted: "B", // 'U', 'S', 'T', or 'B' (if 3-WAY)
+        citySize: "0.1 - 0.5 Juta",
+        envType: "COM", // Komersial
+        sideFriction: "M", // Sedang
+        numPhases: 3,
+        amberTime: 3, // detik
+        allRedTime: 2, // detik
+        cycleTimeDesignOption: "auto", // 'auto' or 'manual'
+        manualCycleTime: 90
+      },
+      approaches: [
+        {
+          id: "U",
+          name: "Utara (Jl. Tidar Baru)",
+          phase: 1,
+          type: "P", // Protected
+          We: 7.0, // Lebar masuk (m)
+          Wout: 7.0, // Lebar keluar (m)
+          hasMedian: true,
+          medianWidth: 1.5,
+          gradient: 0, // %
+          parkingDist: 999, // > 30m / tidak ada
+          ltor: false, // Turn Left On Red
+          flows: { KR: 420, KB: 45, SM: 1150, KT: 15 },
+          turns: { LT: 15, ST: 65, RT: 20 }
+        },
+        {
+          id: "S",
+          name: "Selatan (Jl. Jend. Sudirman)",
+          phase: 1,
+          type: "P",
+          We: 7.5,
+          Wout: 7.5,
+          hasMedian: true,
+          medianWidth: 2.0,
+          gradient: 1.0,
+          parkingDist: 999,
+          ltor: false,
+          flows: { KR: 480, KB: 55, SM: 1300, KT: 20 },
+          turns: { LT: 18, ST: 62, RT: 20 }
+        },
+        {
+          id: "T",
+          name: "Timur (Jl. Mayor Unus)",
+          phase: 2,
+          type: "P",
+          We: 5.5,
+          Wout: 5.5,
+          hasMedian: false,
+          medianWidth: 0,
+          gradient: 0,
+          parkingDist: 25, // 25 m
+          ltor: true,
+          flows: { KR: 280, KB: 20, SM: 750, KT: 10 },
+          turns: { LT: 25, ST: 55, RT: 20 }
+        },
+        {
+          id: "B",
+          name: "Barat (Jl. Pangeran Diponegoro)",
+          phase: 3,
+          type: "P",
+          We: 6.0,
+          Wout: 6.0,
+          hasMedian: false,
+          medianWidth: 0,
+          gradient: -1.5,
+          parkingDist: 999,
+          ltor: false,
+          flows: { KR: 310, KB: 30, SM: 820, KT: 12 },
+          turns: { LT: 20, ST: 50, RT: 30 }
+        }
+      ]
+    };
+
+    // Preset Scenarios
+    const PRESET_SCENARIOS = {
+      standard: {
+        title: "Simpang 4 Canguk (Magelang - 3 Fase)",
+        data: DEFAULT_DATA
+      },
+      twoPhase: {
+        title: "Simpang 4 Terlindung (2 Fase Sederhana)",
+        data: {
+          ...DEFAULT_DATA,
+          project: {
+            ...DEFAULT_DATA.project,
+            intersectionName: "Simpang 4 Ring Road - 2 Fase",
+            numPhases: 2
+          },
+          approaches: DEFAULT_DATA.approaches.map(a => ({
+            ...a,
+            phase: (a.id === "U" || a.id === "S") ? 1 : 2
+          }))
+        }
+      },
+      heavyMotorcycle: {
+        title: "Simpang Padat Sepeda Motor (Kawasan Kampus)",
+        data: {
+          ...DEFAULT_DATA,
+          project: {
+            ...DEFAULT_DATA.project,
+            intersectionName: "Simpang Akses Kampus Tuguran UNTIDAR",
+            sideFriction: "H",
+            numPhases: 3
+          },
+          approaches: DEFAULT_DATA.approaches.map(a => ({
+            ...a,
+            flows: { ...a.flows, SM: a.flows.SM * 1.8 }
+          }))
+        }
+      },
+      tJunction: {
+        title: "Simpang 3 T-Junction (Kebonpolo Magelang)",
+        data: {
+          ...DEFAULT_DATA,
+          project: {
+            ...DEFAULT_DATA.project,
+            intersectionName: "Simpang 3 T Kebonpolo (U - S - T)",
+            junctionType: "3-WAY",
+            tJunctionOmitted: "B",
+            numPhases: 2
+          },
+          approaches: DEFAULT_DATA.approaches.map(a => ({
+            ...a,
+            phase: (a.id === "U" || a.id === "S") ? 1 : 2
+          }))
+        }
+      }
+    };
+
+    // Tooltip / Recommendation content database
+    const GUIDANCE_INFO = {
+      junctionType: {
+        title: "Tipe Simpang: Simpang 4 Lengan vs Simpang 3 Lengan (T-Junction)",
+        recommendation: "Pilih Simpang 3 Lengan jika salah satu lengan buntu / tidak terdapat akses jalan. PKJI 2023 mencatat simpang 3 memiliki titik konflik jauh lebih sedikit (9 konflik vs 32 konflik pada simpang 4).",
+        pros: [
+          "Simpang 3: Konflik lalu lintas minim, keselamatan tinggi, alokasi waktu siklus lebih pendek (lazimnya 2 fase sudah sangat efisien).",
+          "Simpang 4: Mengakomodasi jaringan jalan silang grid penuh perkotaan."
+        ],
+        cons: [
+          "Simpang 3: Memerlukan manuver belok yang tertib pada lengan minor T agar tidak menghambat arus lurus mayor.",
+          "Simpang 4: Waktu hilang total (L) lebih besar dan tundaan rata-rata kendaraan lebih tinggi saat jam sibuk."
+        ]
+      },
+      numPhases: {
+        title: "Pedoman Pemilihan Jumlah Fase APILL (PKJI 2023)",
+        recommendation: "Pilih 2 Fase untuk simpang sedang tanpa arus belok kanan berat (< 200 smp/jam). Pilih 3 atau 4 fase jika belok kanan padat demi keselamatan.",
+        pros: [
+          "2 Fase: Kapasitas simpang tertinggi, waktu siklus pendek, tundaan rata-rata kendaraan lebih rendah.",
+          "3/4 Fase: Menghilangkan tabrakan titik konflik belok kanan (crossing conflict), lebih aman bagi pejalan kaki dan kendaraan."
+        ],
+        cons: [
+          "2 Fase: Risiko tabrakan sudut (right-angle / head-on collision) tinggi bila volume belok kanan tinggi.",
+          "3/4 Fase: Menambah waktu hilang total (L), waktu siklus lebih panjang, antrean memanjang pada lengan yang menunggu merah."
+        ]
+      },
+      approachType: {
+        title: "Pendekat Terlindung (P) vs Terlawan (O)",
+        recommendation: "Gunakan tipe Terlindung (P) jika pergerakan belok kanan diberi fase terpisah atau dilarang. Gunakan Terlawan (O) jika belok kanan memotong arus lurus lawan.",
+        pros: [
+          "Terlindung (P): Arus jenuh optimal (S₀ = 600 × Wₑ), angka kecelakaan minim, kapasitas lebih terprediksi.",
+          "Terlawan (O): Hemat fase sinyal, efisiensi waktu hijau bersama jika arus lawan rendah."
+        ],
+        cons: [
+          "Terlindung (P): Memerlukan fase tersendiri yang menambah waktu siklus.",
+          "Terlawan (O): Nilai EMP SM naik drastis (0.40) & kapasitas tergerus hebat saat volume lurus arah lawan tinggi."
+        ]
+      },
+      ltor: {
+        title: "Belok Kiri Jalan Terus (LTOR - Left Turn On Red)",
+        recommendation: "Disarankan hanya jika lajur keluar penerima memadai dan konflik pejalan kaki / penyeberang jalan terkontrol.",
+        pros: [
+          "Mengurangi volume arus yang memerlukan alokasi waktu hijau sinyal.",
+          "Meningkatkan kapasitas efektif pendekat untuk pergerakan lurus dan belok kanan."
+        ],
+        cons: [
+          "Meningkatkan potensi konflik samping pada lajur keluar.",
+          "Mengurangi aspek keselamatan bagi penyeberang jalan (zebra cross)."
+        ]
+      },
+      citySize: {
+        title: "Faktor Ukuran Kota (Fcs)",
+        recommendation: "Sesuaikan dengan jumlah penduduk wilayah aglomerasi perkotaan.",
+        pros: ["Kota lebih besar (>3 Juta) memiliki pengemudi lebih agresif sehingga kapasitas arus jenuh naik (+5%)."],
+        cons: ["Kota kecil (<100rb) pengemudi cenderung lebih santai / lambat merespons hijau (Fcs = 0.82, kapasitas turun -18%)."]
+      },
+      sideFriction: {
+        title: "Faktor Hambatan Samping (Fsf)",
+        recommendation: "Amati aktivitas pejalan kaki, angkot ngetem, kendaraan lambat, dan akses toko dalam jarak 200m dari simpang.",
+        pros: ["Penertiban parkir liar dan PKL dapat mengembalikan kapasitas pendekat hingga 15%."],
+        cons: ["Hambatan samping Tinggi/Sangat Tinggi menurunkan arus jenuh secara masif (Fsf turun ke 0.84 - 0.88)."]
+      },
+      gradient: {
+        title: "Faktor Kelandaian Pendekat (FG)",
+        recommendation: "Ukur kemiringan memanjang jalan dalam 100m menjelang garis henti.",
+        pros: ["Turunan (G < 0%) mempermudah percepatan start kendaraan ringan."],
+        cons: ["Tanjakan (G > 0%) memperlambat percepatan start kendaraan berat (KB/HV) dan mengurangi kapasitas."]
+      }
+    };
+
+    // Modal Tooltip Component
+    const GuidanceModal = ({ isOpen, type, onClose }) => {
+      if (!isOpen || !type || !GUIDANCE_INFO[type]) return null;
+      const info = GUIDANCE_INFO[type];
+
+      return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-fade-in">
+          <div className="bg-white dark:bg-slate-900 border border-amber-500/30 rounded-2xl max-w-lg w-full p-6 shadow-2xl relative">
+            <button 
+              onClick={onClose} 
+              className="absolute top-4 right-4 text-slate-400 hover:text-slate-600 dark:hover:text-white text-xl">
+              <i className="fa-solid fa-xmark"></i>
+            </button>
+            <div className="flex items-center gap-3 mb-4">
+              <div className="w-10 h-10 rounded-xl bg-amber-100 dark:bg-amber-900/40 text-amber-600 dark:text-amber-400 flex items-center justify-center text-xl font-bold">
+                💡
+              </div>
+              <h3 className="text-lg font-bold text-slate-800 dark:text-white leading-tight">
+                {info.title}
+              </h3>
+            </div>
+            
+            <div className="bg-amber-50 dark:bg-amber-950/30 border-l-4 border-amber-500 p-3 rounded text-sm text-amber-900 dark:text-amber-200 mb-4">
+              <span className="font-semibold">Rekomendasi Teknis PKJI 2023:</span> {info.recommendation}
+            </div>
+
+            <div className="space-y-3 text-sm">
+              <div className="p-3 bg-emerald-50 dark:bg-emerald-950/20 border border-emerald-200 dark:border-emerald-800/40 rounded-xl">
+                <div className="font-bold text-emerald-800 dark:text-emerald-300 flex items-center gap-1.5 mb-1.5">
+                  <i className="fa-solid fa-circle-plus"></i> Keuntungan (Pros)
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-slate-700 dark:text-slate-300 text-xs">
+                  {info.pros.map((p, i) => <li key={i}>{p}</li>)}
+                </ul>
+              </div>
+
+              <div className="p-3 bg-rose-50 dark:bg-rose-950/20 border border-rose-200 dark:border-rose-800/40 rounded-xl">
+                <div className="font-bold text-rose-800 dark:text-rose-300 flex items-center gap-1.5 mb-1.5">
+                  <i className="fa-solid fa-circle-minus"></i> Kekurangan / Risiko (Cons)
+                </div>
+                <ul className="list-disc list-inside space-y-1 text-slate-700 dark:text-slate-300 text-xs">
+                  {info.cons.map((c, i) => <li key={i}>{c}</li>)}
+                </ul>
+              </div>
+            </div>
+
+            <div className="mt-5 flex justify-end">
+              <button
+                onClick={onClose}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-white rounded-lg text-sm font-medium transition-colors">
+                Tutup Panduan
+              </button>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // Math Explanation Card Component
+    const FormulaCard = ({ title, formula, substitute, explanation, ruleRef }) => {
+      const [isOpen, setIsOpen] = useState(false);
+
+      return (
+        <div className="mt-4 border border-slate-200 dark:border-slate-800 rounded-xl bg-slate-50/80 dark:bg-slate-900/60 overflow-hidden text-xs">
+          <button
+            onClick={() => setIsOpen(!isOpen)}
+            className="w-full flex items-center justify-between px-4 py-2.5 bg-slate-100 dark:bg-slate-800/80 hover:bg-slate-200 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-200 font-semibold transition-colors">
+            <span className="flex items-center gap-2">
+              <i className="fa-solid fa-square-root-variable text-blue-600 dark:text-blue-400"></i>
+              <span>Transparansi Rumus & Logika: <strong>{title}</strong></span>
+            </span>
+            <span className="text-slate-400 flex items-center gap-1">
+              <span>{isOpen ? "Sembunyikan" : "Buka Rumus"}</span>
+              <i className={`fa-solid fa-chevron-${isOpen ? "up" : "down"}`}></i>
+            </span>
+          </button>
+          
+          {isOpen && (
+            <div className="p-4 space-y-3 animate-fade-in">
+              <div className="bg-white dark:bg-slate-950 p-3 rounded-lg border border-slate-200 dark:border-slate-800 font-mono text-blue-700 dark:text-blue-300 text-sm shadow-inner">
+                {formula}
+              </div>
+              
+              {substitute && (
+                <div className="p-2.5 bg-amber-50/60 dark:bg-amber-950/20 border border-amber-200 dark:border-amber-900/40 rounded text-slate-800 dark:text-amber-200 font-mono text-xs">
+                  <span className="font-semibold text-amber-700 dark:text-amber-400">Substitusi Angka: </span>
+                  {substitute}
+                </div>
+              )}
+
+              <div className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                <span className="font-bold text-slate-800 dark:text-slate-100">💡 Mengapa rumus ini digunakan?</span>
+                <p className="mt-1">{explanation}</p>
+                {ruleRef && (
+                  <p className="mt-1 text-[11px] text-slate-400 italic">
+                    Referensi: {ruleRef}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+        </div>
+      );
+    };
+
+    // Top-down 2D Simulation Canvas Component with High-Fidelity Vehicles & Queue Dynamics
+    const TopDownSimulation = ({ approaches, signalPlan, currentActivePhase, cycleTime, junctionType = '4-WAY', tJunctionOmitted = 'B' }) => {
+      const canvasRef = useRef(null);
+      const [isPlaying, setIsPlaying] = useState(true);
+      const [simSpeed, setSimSpeed] = useState(1);
+      const [elapsedCycleTime, setElapsedCycleTime] = useState(0);
+      const animFrameRef = useRef(null);
+      const vehiclesRef = useRef([]);
+
+      const is3Way = junctionType === '3-WAY';
+      const omitted = tJunctionOmitted;
+
+      // Initialize Vehicle Fleet with realistic vehicle types and proportions
+      useEffect(() => {
+        const vehicles = [];
+        const approachDirs = ['N', 'S', 'E', 'W'];
+        const activeDirs = approachDirs.filter(dir => {
+          if (is3Way) {
+            if (dir === 'N' && omitted === 'U') return false;
+            if (dir === 'S' && omitted === 'S') return false;
+            if (dir === 'E' && omitted === 'T') return false;
+            if (dir === 'W' && omitted === 'B') return false;
+          }
+          return true;
+        });
+
+        const carColors = ['#f8fafc', '#1e3a8a', '#dc2626', '#94a3b8', '#eab308', '#0f172a', '#059669'];
+        const helmetColors = ['#16a34a', '#dc2626', '#f59e0b', '#ffffff', '#2563eb', '#334155'];
+
+        let idCounter = 1;
+        activeDirs.forEach(dir => {
+          // Find matching approach config
+          const app = approaches.find(a => 
+            (dir === 'N' && a.id === 'U') ||
+            (dir === 'S' && a.id === 'S') ||
+            (dir === 'E' && a.id === 'T') ||
+            (dir === 'W' && a.id === 'B')
+          ) || { flows: { KR: 400, KB: 50, SM: 1000 } };
+
+          const totalFlow = (app.flows?.KR || 400) + (app.flows?.KB || 50) + (app.flows?.SM || 1000);
+          const probSM = (app.flows?.SM || 1000) / totalFlow;
+          const probKR = probSM + ((app.flows?.KR || 400) / totalFlow);
+
+          // 20 vehicles per approach staged at distances 20m to 280m
+          for (let i = 0; i < 20; i++) {
+            const rand = Math.random();
+            let type = 'SM';
+            let length = 16, width = 8, sublane = (Math.random() < 0.33 ? -8 : (Math.random() < 0.66 ? 0 : 8));
+            if (rand < probSM) {
+              type = 'SM'; length = 16; width = 8;
+            } else if (rand < probKR) {
+              type = 'KR'; length = 28; width = 14; sublane = (Math.random() < 0.5 ? -6 : 6);
+            } else {
+              type = 'KB'; length = 46; width = 17; sublane = (Math.random() < 0.5 ? -6 : 6);
+            }
+
+            vehicles.push({
+              id: idCounter++,
+              dir,
+              dist: 25 + i * 24 + Math.random() * 8, // staged distance along road
+              type,
+              length,
+              width,
+              sublane,
+              color: carColors[Math.floor(Math.random() * carColors.length)],
+              helmetColor: helmetColors[Math.floor(Math.random() * helmetColors.length)],
+              jacketColor: Math.random() < 0.4 ? '#16a34a' : '#1e293b', // Gojek/Grab green or casual dark
+              isTruck: Math.random() < 0.5,
+              maxSpeed: type === 'SM' ? 2.2 : (type === 'KR' ? 1.9 : 1.3),
+              speed: type === 'SM' ? 2.0 : (type === 'KR' ? 1.8 : 1.2),
+              isBraking: false,
+              inQueue: false,
+              turn: Math.random() < 0.2 ? 'LT' : (Math.random() < 0.8 ? 'ST' : 'RT')
+            });
+          }
+        });
+
+        vehiclesRef.current = vehicles;
+      }, [approaches, is3Way, omitted]);
+
+      // Determine signal state & exact countdown seconds for a given phase
+      const getPhaseStatus = (phaseNum) => {
+        const phaseTiming = signalPlan.phases.find(p => p.phase === phaseNum);
+        if (!phaseTiming) return { state: 'RED', label: 'MERAH', seconds: 0, color: '#ef4444' };
+
+        const { startGreen, endGreen, amberDuration, allRedDuration } = phaseTiming;
+        const cur = elapsedCycleTime;
+        const endAmber = endGreen + amberDuration;
+
+        if (cur >= startGreen && cur < endGreen) {
+          const sec = Math.ceil(endGreen - cur);
+          return { state: 'GREEN', label: 'HIJAU', seconds: sec, color: '#10b981' };
+        } else if (cur >= endGreen && cur < endAmber) {
+          const sec = Math.ceil(endAmber - cur);
+          return { state: 'AMBER', label: 'KUNING', seconds: sec, color: '#f59e0b' };
+        } else {
+          // Red phase
+          let sec = 0;
+          if (cur < startGreen) {
+            sec = Math.ceil(startGreen - cur);
+          } else {
+            sec = Math.ceil((cycleTime - cur) + startGreen);
+          }
+          return { state: 'RED', label: 'MERAH', seconds: sec, color: '#ef4444' };
+        }
+      };
+
+      // Simulation main loop
+      useEffect(() => {
+        let lastTime = performance.now();
+
+        const updateSimulation = (now) => {
+          const dt = (now - lastTime) / 1000;
+          lastTime = now;
+
+          if (isPlaying && cycleTime > 0) {
+            setElapsedCycleTime((prev) => (prev + dt * simSpeed) % cycleTime);
+          }
+
+          updateVehiclePhysics();
+          renderCanvas();
+          animFrameRef.current = requestAnimationFrame(updateSimulation);
+        };
+
+        animFrameRef.current = requestAnimationFrame(updateSimulation);
+        return () => cancelAnimationFrame(animFrameRef.current);
+      }, [isPlaying, simSpeed, cycleTime, approaches, signalPlan, elapsedCycleTime]);
+
+      // Vehicle Physics with Realistic Anti-Overlap Queuing & Accordion Wave
+      const updateVehiclePhysics = () => {
+        const vehicles = vehiclesRef.current;
+        const approachDirs = ['N', 'S', 'E', 'W'];
+
+        const uApp = approaches.find(a => a.id === 'U') || { phase: 1 };
+        const sApp = approaches.find(a => a.id === 'S') || { phase: 1 };
+        const tApp = approaches.find(a => a.id === 'T') || { phase: 2 };
+        const bApp = approaches.find(a => a.id === 'B') || { phase: 3 };
+
+        const dirPhases = {
+          'N': uApp.phase,
+          'S': sApp.phase,
+          'E': tApp.phase,
+          'W': bApp.phase
+        };
+
+        approachDirs.forEach(dir => {
+          const phase = dirPhases[dir];
+          const status = getPhaseStatus(phase);
+          const isRedOrAmber = status.state === 'RED' || status.state === 'AMBER';
+
+          // Vehicles in this direction
+          const dirVehicles = vehicles.filter(v => v.dir === dir);
+
+          // Sort approaching vehicles by dist ascending (closest to stop line first)
+          const approaching = dirVehicles.filter(v => v.dist >= -15);
+          approaching.sort((a, b) => a.dist - b.dist);
+
+          const stopLineDist = 14; // distance from stop line
+
+          approaching.forEach((v, idx) => {
+            if (isRedOrAmber) {
+              // Find the closest vehicle ahead in the same/overlapping lane
+              let aheadVeh = null;
+              for (let j = idx - 1; j >= 0; j--) {
+                const other = approaching[j];
+                const lateralDiff = Math.abs(v.sublane - other.sublane);
+                const laneOverlap = (v.type === 'SM' && other.type === 'SM') ? (lateralDiff < 8) : (lateralDiff < 14);
+                if (laneOverlap) {
+                  aheadVeh = other;
+                  break;
+                }
+              }
+
+              let targetDist = stopLineDist;
+              if (aheadVeh) {
+                const bufferGap = (v.type === 'SM' && aheadVeh.type === 'SM') ? 6 : 10;
+                targetDist = aheadVeh.dist + (aheadVeh.length / 2) + (v.length / 2) + bufferGap;
+              }
+
+              const distToStop = v.dist - targetDist;
+
+              if (distToStop <= 1.5) {
+                // Stopped in queue!
+                v.dist = targetDist;
+                v.speed = 0;
+                v.isBraking = true;
+                v.inQueue = true;
+              } else if (distToStop <= 45) {
+                // Smooth deceleration as queue approaches
+                v.isBraking = true;
+                v.speed = Math.max(0.2, distToStop * 0.08);
+                v.dist -= v.speed * simSpeed;
+              } else {
+                // Cruising towards queue
+                v.isBraking = false;
+                v.inQueue = false;
+                v.dist -= v.speed * simSpeed;
+              }
+            } else {
+              // Signal is GREEN!
+              let aheadVeh = null;
+              for (let j = idx - 1; j >= 0; j--) {
+                const other = approaching[j];
+                const lateralDiff = Math.abs(v.sublane - other.sublane);
+                const laneOverlap = (v.type === 'SM' && other.type === 'SM') ? (lateralDiff < 8) : (lateralDiff < 14);
+                if (laneOverlap) {
+                  aheadVeh = other;
+                  break;
+                }
+              }
+
+              let safeGap = (v.type === 'SM') ? 14 : 22;
+              let canMove = true;
+              if (aheadVeh && (aheadVeh.dist - v.dist) < safeGap) {
+                canMove = false;
+                v.speed = Math.min(v.speed, aheadVeh.speed * 0.9);
+                v.isBraking = true;
+              }
+
+              if (canMove) {
+                v.isBraking = false;
+                v.inQueue = false;
+                v.speed = Math.min(v.maxSpeed, v.speed + 0.08 * simSpeed);
+              }
+
+              v.dist -= v.speed * simSpeed;
+            }
+          });
+
+          // Vehicles that already crossed intersection (dist < -15)
+          const crossed = dirVehicles.filter(v => v.dist < -15);
+          crossed.forEach(v => {
+            v.isBraking = false;
+            v.inQueue = false;
+            v.dist -= v.speed * simSpeed;
+
+            // Recycle vehicle when far away
+            if (v.dist < -340) {
+              v.dist = 290 + Math.random() * 80;
+              v.speed = v.maxSpeed;
+            }
+          });
+        });
+      };
+
+      // Drawing Helper Functions for Highly Recognizable Top-Down Vehicles
+      // Note: Default orientation (angle = 0) is pointing UPWARDS (North, towards -Y)
+      const drawCar = (ctx, v) => {
+        const { length: l, width: w, color, isBraking, inQueue } = v;
+
+        // Drop shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.3)';
+        ctx.beginPath();
+        ctx.roundRect(-w / 2 + 1, -l / 2 + 2, w, l, 4);
+        ctx.fill();
+
+        // Car Main Body
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(-w / 2, -l / 2, w, l, 4);
+        ctx.fill();
+
+        // Edge contour / outline
+        ctx.strokeStyle = 'rgba(0,0,0,0.25)';
+        ctx.lineWidth = 1;
+        ctx.stroke();
+
+        // Front Windshield (curved dark glass at front -l/2)
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.roundRect(-w / 2 + 1.5, -l / 2 + 5, w - 3, 5, 2);
+        ctx.fill();
+
+        // Windshield glare/reflection
+        ctx.fillStyle = 'rgba(255,255,255,0.4)';
+        ctx.fillRect(-w / 2 + 3, -l / 2 + 6, 3, 3);
+
+        // Car Roof
+        ctx.fillStyle = color;
+        ctx.beginPath();
+        ctx.roundRect(-w / 2 + 1.5, -l / 2 + 11, w - 3, l - 18, 1);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+        ctx.stroke();
+
+        // Rear Windshield
+        ctx.fillStyle = '#1e293b';
+        ctx.beginPath();
+        ctx.roundRect(-w / 2 + 2, l / 2 - 8, w - 4, 4, 1.5);
+        ctx.fill();
+
+        // Side Mirrors
+        ctx.fillStyle = color;
+        ctx.fillRect(-w / 2 - 2, -l / 2 + 6, 2, 3);
+        ctx.fillRect(w / 2, -l / 2 + 6, 2, 3);
+
+        // Front Headlights (at -l/2)
+        ctx.fillStyle = '#fef08a';
+        ctx.fillRect(-w / 2 + 1, -l / 2, 2.5, 1.5);
+        ctx.fillRect(w / 2 - 3.5, -l / 2, 2.5, 1.5);
+
+        // Rear Brake Lights (at +l/2, glow bright RED when braking or in queue!)
+        if (isBraking || inQueue) {
+          ctx.fillStyle = '#ff0033';
+          ctx.shadowColor = '#ff0033';
+          ctx.shadowBlur = 10;
+          ctx.fillRect(-w / 2 + 1, l / 2 - 2, 3, 2);
+          ctx.fillRect(w / 2 - 4, l / 2 - 2, 3, 2);
+          ctx.shadowBlur = 0;
+        } else {
+          ctx.fillStyle = '#991b1b';
+          ctx.fillRect(-w / 2 + 1, l / 2 - 1.5, 2.5, 1.5);
+          ctx.fillRect(w / 2 - 3.5, l / 2 - 1.5, 2.5, 1.5);
+        }
+      };
+
+      const drawMotorcycle = (ctx, v) => {
+        const { length: l, width: w, helmetColor, jacketColor, isBraking, inQueue } = v;
+
+        // Front & Rear Rubber Wheels
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(-1.5, -l / 2, 3, 5); // Front tire (at -l/2)
+        ctx.fillRect(-1.5, l / 2 - 5, 3, 5); // Rear tire (at +l/2)
+
+        // Handlebars
+        ctx.fillStyle = '#475569';
+        ctx.fillRect(-w / 2, -l / 2 + 4, w, 2);
+        // Grips
+        ctx.fillStyle = '#0f172a';
+        ctx.fillRect(-w / 2, -l / 2 + 3.5, 1.5, 3);
+        ctx.fillRect(w / 2 - 1.5, -l / 2 + 3.5, 1.5, 3);
+
+        // Motorcycle Chassis / Fairing
+        ctx.fillStyle = '#38bdf8';
+        ctx.beginPath();
+        ctx.moveTo(0, -l / 2 + 2);
+        ctx.lineTo(-2.5, -l / 2 + 7);
+        ctx.lineTo(-2, l / 2 - 4);
+        ctx.lineTo(2, l / 2 - 4);
+        ctx.lineTo(2.5, -l / 2 + 7);
+        ctx.closePath();
+        ctx.fill();
+
+        // Rider Jacket / Torso
+        ctx.fillStyle = jacketColor;
+        ctx.beginPath();
+        ctx.ellipse(0, 0, 4, 3, 0, 0, Math.PI * 2);
+        ctx.fill();
+
+        // Rider Helmet
+        ctx.fillStyle = helmetColor;
+        ctx.beginPath();
+        ctx.arc(0, -2, 3.2, 0, Math.PI * 2);
+        ctx.fill();
+        ctx.strokeStyle = 'rgba(0,0,0,0.3)';
+        ctx.lineWidth = 0.5;
+        ctx.stroke();
+
+        // Visor reflection (facing forward towards -Y)
+        ctx.fillStyle = '#0f172a';
+        ctx.beginPath();
+        ctx.arc(0, -3.2, 2.2, Math.PI * 0.8, Math.PI * 2.2);
+        ctx.stroke();
+
+        // Headlight beam (at -l/2)
+        ctx.fillStyle = '#fef08a';
+        ctx.fillRect(-1, -l / 2 - 1, 2, 1.5);
+
+        // Rear Brake Light (at +l/2)
+        if (isBraking || inQueue) {
+          ctx.fillStyle = '#ff0033';
+          ctx.shadowColor = '#ff0033';
+          ctx.shadowBlur = 8;
+          ctx.fillRect(-1.5, l / 2 - 1, 3, 2);
+          ctx.shadowBlur = 0;
+        } else {
+          ctx.fillStyle = '#991b1b';
+          ctx.fillRect(-1, l / 2 - 1, 2, 1);
+        }
+      };
+
+      const drawHeavyVehicle = (ctx, v) => {
+        const { length: l, width: w, isTruck, isBraking, inQueue } = v;
+
+        // Shadow
+        ctx.fillStyle = 'rgba(0,0,0,0.35)';
+        ctx.fillRect(-w / 2 + 2, -l / 2 + 3, w, l);
+
+        if (!isTruck) {
+          // --- CITY BUS ---
+          ctx.fillStyle = '#2563eb'; // Blue Bus Body
+          ctx.beginPath();
+          ctx.roundRect(-w / 2, -l / 2, w, l, 5);
+          ctx.fill();
+          ctx.strokeStyle = '#1e3a8a';
+          ctx.stroke();
+
+          // Panoramic Windshield (front at -l/2)
+          ctx.fillStyle = '#0f172a';
+          ctx.beginPath();
+          ctx.roundRect(-w / 2 + 1.5, -l / 2 + 2, w - 3, 7, 2);
+          ctx.fill();
+
+          // Roof AC Ventilation units
+          ctx.fillStyle = '#f1f5f9';
+          ctx.beginPath();
+          ctx.roundRect(-w / 2 + 3, -4, w - 6, 12, 2);
+          ctx.fill();
+          ctx.strokeStyle = '#cbd5e1';
+          ctx.stroke();
+
+          // Side passenger window stripes
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(-w / 2 + 1, -l / 2 + 11, 1.5, l - 18);
+          ctx.fillRect(w / 2 - 2.5, -l / 2 + 11, 1.5, l - 18);
+        } else {
+          // --- HEAVY CARGO TRUCK ---
+          // Front Driver Cab (at -l/2)
+          ctx.fillStyle = '#ea580c'; // Orange Cab
+          ctx.beginPath();
+          ctx.roundRect(-w / 2, -l / 2, w, 14, 3);
+          ctx.fill();
+
+          // Cab Windshield
+          ctx.fillStyle = '#0f172a';
+          ctx.fillRect(-w / 2 + 2, -l / 2 + 2, w - 4, 4);
+
+          // Side mirrors
+          ctx.fillStyle = '#1e293b';
+          ctx.fillRect(-w / 2 - 2, -l / 2 + 4, 2, 3);
+          ctx.fillRect(w / 2, -l / 2 + 4, 2, 3);
+
+          // Rear Cargo Box / Container (at +l/2)
+          ctx.fillStyle = '#e2e8f0';
+          ctx.fillRect(-w / 2 - 0.5, -l / 2 + 16, w + 1, l - 17);
+          ctx.strokeStyle = '#94a3b8';
+          ctx.strokeRect(-w / 2 - 0.5, -l / 2 + 16, w + 1, l - 17);
+
+          // Corrugated cargo texture lines
+          ctx.fillStyle = '#cbd5e1';
+          for (let y = -l / 2 + 22; y < l / 2 - 4; y += 6) {
+            ctx.fillRect(-w / 2 + 1, y, w - 2, 1.5);
+          }
+        }
+
+        // Taillights (at +l/2)
+        if (isBraking || inQueue) {
+          ctx.fillStyle = '#ff0033';
+          ctx.shadowColor = '#ff0033';
+          ctx.shadowBlur = 10;
+          ctx.fillRect(-w / 2 + 1, l / 2 - 2, 3.5, 2.5);
+          ctx.fillRect(w / 2 - 4.5, l / 2 - 2, 3.5, 2.5);
+          ctx.shadowBlur = 0;
+        } else {
+          ctx.fillStyle = '#991b1b';
+          ctx.fillRect(-w / 2 + 1, l / 2 - 2, 3, 2);
+          ctx.fillRect(w / 2 - 4, l / 2 - 2, 3, 2);
+        }
+      };
+
+      const renderCanvas = () => {
+        const canvas = canvasRef.current;
+        if (!canvas) return;
+        const ctx = canvas.getContext('2d');
+        const W = canvas.width;
+        const H = canvas.height;
+        const cx = W / 2;
+        const cy = H / 2;
+
+        ctx.clearRect(0, 0, W, H);
+
+        const isDark = document.documentElement.classList.contains('dark');
+
+        // Background terrain
+        ctx.fillStyle = isDark ? '#0b1120' : '#f8fafc';
+        ctx.fillRect(0, 0, W, H);
+
+        // Road Widths scaling
+        const scale = 5.2; // pixels per meter
+        const uApp = approaches.find(a => a.id === 'U') || { We: 7, Wout: 7, queueLength: 35, phase: 1, C: 1200, DJ: 0.6 };
+        const sApp = approaches.find(a => a.id === 'S') || { We: 7.5, Wout: 7.5, queueLength: 40, phase: 1, C: 1250, DJ: 0.6 };
+        const tApp = approaches.find(a => a.id === 'T') || { We: 5.5, Wout: 5.5, queueLength: 25, phase: 2, C: 700, DJ: 0.7 };
+        const bApp = approaches.find(a => a.id === 'B') || { We: 6, Wout: 6, queueLength: 30, phase: 3, C: 800, DJ: 0.75 };
+
+        const wNS = Math.max(uApp.We, sApp.We) * scale * 2.3;
+        const wEW = Math.max(tApp.We, bApp.We) * scale * 2.3;
+
+        // Sidewalk / Curbs Background (Border around roadways)
+        ctx.fillStyle = isDark ? '#1e293b' : '#e2e8f0';
+        if (!is3Way || (omitted !== 'U' && omitted !== 'S')) {
+          ctx.fillRect(cx - wNS / 2 - 14, 0, wNS + 28, H);
+        } else if (omitted === 'U') {
+          ctx.fillRect(cx - wNS / 2 - 14, cy - wEW / 2 - 14, wNS + 28, H - (cy - wEW / 2 - 14));
+        } else if (omitted === 'S') {
+          ctx.fillRect(cx - wNS / 2 - 14, 0, wNS + 28, cy + wEW / 2 + 14);
+        }
+
+        if (!is3Way || (omitted !== 'B' && omitted !== 'T')) {
+          ctx.fillRect(0, cy - wEW / 2 - 14, W, wEW + 28);
+        } else if (omitted === 'B') {
+          ctx.fillRect(cx - wNS / 2 - 14, cy - wEW / 2 - 14, W - (cx - wNS / 2 - 14), wEW + 28);
+        } else if (omitted === 'T') {
+          ctx.fillRect(0, cy - wEW / 2 - 14, cx + wNS / 2 + 14, wEW + 28);
+        }
+
+        // Asphalt Roadways
+        ctx.fillStyle = isDark ? '#141c2b' : '#334155';
+        if (!is3Way || (omitted !== 'U' && omitted !== 'S')) {
+          ctx.fillRect(cx - wNS / 2, 0, wNS, H);
+        } else if (omitted === 'U') {
+          ctx.fillRect(cx - wNS / 2, cy - wEW / 2, wNS, H - (cy - wEW / 2));
+        } else if (omitted === 'S') {
+          ctx.fillRect(cx - wNS / 2, 0, wNS, cy + wEW / 2);
+        }
+
+        if (!is3Way || (omitted !== 'B' && omitted !== 'T')) {
+          ctx.fillRect(0, cy - wEW / 2, W, wEW);
+        } else if (omitted === 'B') {
+          ctx.fillRect(cx - wNS / 2, cy - wEW / 2, W - (cx - wNS / 2), wEW);
+        } else if (omitted === 'T') {
+          ctx.fillRect(0, cy - wEW / 2, cx + wNS / 2, wEW);
+        }
+
+        // Junction Center Area
+        ctx.fillStyle = isDark ? '#101726' : '#293548';
+        ctx.fillRect(cx - wNS / 2, cy - wEW / 2, wNS, wEW);
+
+        // --- DRAW ROAD MARKINGS & CROSSWALKS ---
+        // Zebra Crosswalk helper
+        const drawZebraCross = (x, y, w, h, isHoriz) => {
+          ctx.fillStyle = '#f8fafc';
+          if (isHoriz) {
+            const numBars = Math.floor(w / 12);
+            for (let i = 0; i < numBars; i++) {
+              ctx.fillRect(x + i * 12 + 2, y, 7, h);
+            }
+          } else {
+            const numBars = Math.floor(h / 12);
+            for (let i = 0; i < numBars; i++) {
+              ctx.fillRect(x, y + i * 12 + 2, w, 7);
+            }
+          }
+        };
+
+        // Crosswalks on each active mouth
+        if (!is3Way || omitted !== 'U') drawZebraCross(cx - wNS / 2, cy - wEW / 2 - 20, wNS, 16, true);  // North
+        if (!is3Way || omitted !== 'S') drawZebraCross(cx - wNS / 2, cy + wEW / 2 + 4, wNS, 16, true);   // South
+        if (!is3Way || omitted !== 'T') drawZebraCross(cx + wNS / 2 + 4, cy - wEW / 2, 16, wEW, false);  // East
+        if (!is3Way || omitted !== 'B') drawZebraCross(cx - wNS / 2 - 20, cy - wEW / 2, 16, wEW, false); // West
+
+        // Solid White Stop Lines (Thick 3.5px)
+        ctx.strokeStyle = '#ffffff';
+        ctx.lineWidth = 3.5;
+        if (!is3Way || omitted !== 'U') {
+          ctx.beginPath(); ctx.moveTo(cx, cy - wEW / 2); ctx.lineTo(cx + wNS / 2, cy - wEW / 2); ctx.stroke();
+        }
+        if (!is3Way || omitted !== 'S') {
+          ctx.beginPath(); ctx.moveTo(cx - wNS / 2, cy + wEW / 2); ctx.lineTo(cx, cy + wEW / 2); ctx.stroke();
+        }
+        if (!is3Way || omitted !== 'T') {
+          ctx.beginPath(); ctx.moveTo(cx + wNS / 2, cy); ctx.lineTo(cx + wNS / 2, cy + wEW / 2); ctx.stroke();
+        }
+        if (!is3Way || omitted !== 'B') {
+          ctx.beginPath(); ctx.moveTo(cx - wNS / 2, cy - wEW / 2); ctx.lineTo(cx - wNS / 2, cy); ctx.stroke();
+        }
+
+        // Center dividers (Yellow double lines or dashed)
+        ctx.strokeStyle = '#f59e0b';
+        ctx.lineWidth = 2;
+        ctx.setLineDash([8, 8]);
+        if (!is3Way || (omitted !== 'U' && omitted !== 'S')) {
+          ctx.beginPath();
+          ctx.moveTo(cx, 0); ctx.lineTo(cx, cy - wEW / 2 - 22);
+          ctx.moveTo(cx, cy + wEW / 2 + 22); ctx.lineTo(cx, H);
+          ctx.stroke();
+        } else if (omitted === 'U') {
+          ctx.beginPath();
+          ctx.moveTo(cx, cy + wEW / 2 + 22); ctx.lineTo(cx, H);
+          ctx.stroke();
+        } else if (omitted === 'S') {
+          ctx.beginPath();
+          ctx.moveTo(cx, 0); ctx.lineTo(cx, cy - wEW / 2 - 22);
+          ctx.stroke();
+        }
+
+        if (!is3Way || (omitted !== 'B' && omitted !== 'T')) {
+          ctx.beginPath();
+          ctx.moveTo(0, cy); ctx.lineTo(cx - wNS / 2 - 22, cy);
+          ctx.moveTo(cx + wNS / 2 + 22, cy); ctx.lineTo(W, cy);
+          ctx.stroke();
+        } else if (omitted === 'B') {
+          ctx.beginPath();
+          ctx.moveTo(cx + wNS / 2 + 22, cy); ctx.lineTo(W, cy);
+          ctx.stroke();
+        } else if (omitted === 'T') {
+          ctx.beginPath();
+          ctx.moveTo(0, cy); ctx.lineTo(cx - wNS / 2 - 22, cy);
+          ctx.stroke();
+        }
+        ctx.setLineDash([]);
+
+        // White Lane Dashes for incoming lanes
+        ctx.strokeStyle = 'rgba(255,255,255,0.35)';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([6, 8]);
+        ctx.beginPath();
+        if (!is3Way || omitted !== 'U') {
+          ctx.moveTo(cx + wNS / 4, 0); ctx.lineTo(cx + wNS / 4, cy - wEW / 2 - 22);
+        }
+        if (!is3Way || omitted !== 'S') {
+          ctx.moveTo(cx - wNS / 4, cy + wEW / 2 + 22); ctx.lineTo(cx - wNS / 4, H);
+        }
+        if (!is3Way || omitted !== 'T') {
+          ctx.moveTo(cx + wNS / 2 + 22, cy + wEW / 4); ctx.lineTo(W, cy + wEW / 4);
+        }
+        if (!is3Way || omitted !== 'B') {
+          ctx.moveTo(0, cy - wEW / 4); ctx.lineTo(cx - wNS / 2 - 22, cy - wEW / 4);
+        }
+        ctx.stroke();
+        ctx.setLineDash([]);
+
+        // Get signal status for each approach
+        const uStatus = getPhaseStatus(uApp.phase);
+        const sStatus = getPhaseStatus(sApp.phase);
+        const tStatus = getPhaseStatus(tApp.phase);
+        const bStatus = getPhaseStatus(bApp.phase);
+
+        // --- SUBTLE QUEUE LENGTH RULER ON ROAD CURB (NO CLUTTER) ---
+        const vehicles = vehiclesRef.current;
+
+        const drawCurbQueueRuler = (dir, status, appConfig) => {
+          const dirVehicles = vehicles.filter(v => v.dir === dir && v.dist >= 0);
+          const queued = dirVehicles.filter(v => v.inQueue || v.isBraking);
+          
+          let maxQueueDist = 0;
+          if (queued.length > 0) {
+            maxQueueDist = Math.max(...queued.map(v => v.dist));
+          }
+          const queueMeters = Math.round(maxQueueDist / scale);
+          const isRed = (status.state === 'RED' || status.state === 'AMBER');
+
+          ctx.save();
+          if (dir === 'N') {
+            const rx = cx + wNS / 2 + 2;
+            const y0 = cy - wEW / 2;
+            const yEnd = y0 - (maxQueueDist > 0 ? maxQueueDist : 0);
+
+            if (isRed && maxQueueDist > 15) {
+              // Glowing translucent red stripe along curb
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+              ctx.fillRect(cx, yEnd, wNS / 2, maxQueueDist);
+
+              // Red ruler line on the curb
+              ctx.strokeStyle = '#ef4444';
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(rx, y0); ctx.lineTo(rx, yEnd);
+              ctx.stroke();
+
+              // Queue distance tag at the tail of the queue
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+              ctx.beginPath();
+              ctx.roundRect(rx + 6, yEnd - 8, 70, 18, 4);
+              ctx.fill();
+              ctx.fillStyle = '#fca5a5';
+              ctx.font = 'bold 9px sans-serif';
+              ctx.fillText(`Antrean: ${queueMeters}m`, rx + 10, yEnd + 4);
+            }
+          } else if (dir === 'S') {
+            const rx = cx - wNS / 2 - 2;
+            const y0 = cy + wEW / 2;
+            const yEnd = y0 + (maxQueueDist > 0 ? maxQueueDist : 0);
+
+            if (isRed && maxQueueDist > 15) {
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+              ctx.fillRect(cx - wNS / 2, y0, wNS / 2, maxQueueDist);
+
+              ctx.strokeStyle = '#ef4444';
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(rx, y0); ctx.lineTo(rx, yEnd);
+              ctx.stroke();
+
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+              ctx.beginPath();
+              ctx.roundRect(rx - 76, yEnd - 8, 70, 18, 4);
+              ctx.fill();
+              ctx.fillStyle = '#fca5a5';
+              ctx.font = 'bold 9px sans-serif';
+              ctx.fillText(`Antrean: ${queueMeters}m`, rx - 72, yEnd + 4);
+            }
+          } else if (dir === 'E') {
+            const ry = cy + wEW / 2 + 2;
+            const x0 = cx + wNS / 2;
+            const xEnd = x0 + (maxQueueDist > 0 ? maxQueueDist : 0);
+
+            if (isRed && maxQueueDist > 15) {
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+              ctx.fillRect(x0, cy, maxQueueDist, wEW / 2);
+
+              ctx.strokeStyle = '#ef4444';
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(x0, ry); ctx.lineTo(xEnd, ry);
+              ctx.stroke();
+
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+              ctx.beginPath();
+              ctx.roundRect(xEnd - 35, ry + 6, 70, 18, 4);
+              ctx.fill();
+              ctx.fillStyle = '#fca5a5';
+              ctx.font = 'bold 9px sans-serif';
+              ctx.fillText(`Antrean: ${queueMeters}m`, xEnd - 30, ry + 18);
+            }
+          } else if (dir === 'W') {
+            const ry = cy - wEW / 2 - 2;
+            const x0 = cx - wNS / 2;
+            const xEnd = x0 - (maxQueueDist > 0 ? maxQueueDist : 0);
+
+            if (isRed && maxQueueDist > 15) {
+              ctx.fillStyle = 'rgba(239, 68, 68, 0.2)';
+              ctx.fillRect(xEnd, cy - wEW / 2, maxQueueDist, wEW / 2);
+
+              ctx.strokeStyle = '#ef4444';
+              ctx.lineWidth = 2.5;
+              ctx.beginPath();
+              ctx.moveTo(x0, ry); ctx.lineTo(xEnd, ry);
+              ctx.stroke();
+
+              ctx.fillStyle = 'rgba(15, 23, 42, 0.9)';
+              ctx.beginPath();
+              ctx.roundRect(xEnd - 35, ry - 24, 70, 18, 4);
+              ctx.fill();
+              ctx.fillStyle = '#fca5a5';
+              ctx.font = 'bold 9px sans-serif';
+              ctx.fillText(`Antrean: ${queueMeters}m`, xEnd - 30, ry - 12);
+            }
+          }
+          ctx.restore();
+        };
+
+        if (!is3Way || omitted !== 'U') drawCurbQueueRuler('N', uStatus, uApp);
+        if (!is3Way || omitted !== 'S') drawCurbQueueRuler('S', sStatus, sApp);
+        if (!is3Way || omitted !== 'T') drawCurbQueueRuler('E', tStatus, tApp);
+        if (!is3Way || omitted !== 'B') drawCurbQueueRuler('W', bStatus, bApp);
+
+        // --- RENDER TRAFFIC SIGNAL POSTS (ON CORNER SIDEWALKS) ---
+        const drawSignalHead = (x, y, status, label) => {
+          // Shadow
+          ctx.fillStyle = 'rgba(0,0,0,0.4)';
+          ctx.fillRect(x - 11 + 2, y - 26 + 2, 22, 52);
+
+          // Box
+          ctx.fillStyle = '#0f172a';
+          ctx.strokeStyle = '#64748b';
+          ctx.lineWidth = 1.2;
+          ctx.beginPath();
+          ctx.roundRect(x - 11, y - 26, 22, 52, 4);
+          ctx.fill();
+          ctx.stroke();
+
+          // Visors/hoods
+          ctx.fillStyle = '#1e293b';
+          [-16, 0, 16].forEach(offsetY => {
+            ctx.beginPath();
+            ctx.arc(x, y + offsetY - 1, 7, Math.PI, 0);
+            ctx.stroke();
+          });
+
+          // Red light bulb
+          ctx.beginPath();
+          ctx.arc(x, y - 16, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = status.state === 'RED' ? '#ef4444' : '#450a0a';
+          if (status.state === 'RED') {
+            ctx.shadowColor = '#ef4444'; ctx.shadowBlur = 12;
+          }
+          ctx.fill();
+          ctx.shadowBlur = 0;
+
+          // Yellow/Amber bulb
+          ctx.beginPath();
+          ctx.arc(x, y, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = status.state === 'AMBER' ? '#f59e0b' : '#451a03';
+          if (status.state === 'AMBER') {
+            ctx.shadowColor = '#f59e0b'; ctx.shadowBlur = 12;
+          }
+          ctx.fill();
+          ctx.shadowBlur = 0;
+
+          // Green bulb
+          ctx.beginPath();
+          ctx.arc(x, y + 16, 5.5, 0, Math.PI * 2);
+          ctx.fillStyle = status.state === 'GREEN' ? '#10b981' : '#022c22';
+          if (status.state === 'GREEN') {
+            ctx.shadowColor = '#10b981'; ctx.shadowBlur = 12;
+          }
+          ctx.fill();
+          ctx.shadowBlur = 0;
+
+          // Clean Pill below signal with countdown seconds
+          ctx.fillStyle = status.color;
+          ctx.beginPath();
+          ctx.roundRect(x - 22, y + 30, 44, 16, 4);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 9px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${label} ${status.seconds}s`, x, y + 42);
+        };
+
+        // Draw signal posts on corner sidewalks with ample spacing
+        if (!is3Way || omitted !== 'U') drawSignalHead(cx + wNS / 2 + 18, cy - wEW / 2 - 38, uStatus, 'U');
+        if (!is3Way || omitted !== 'S') drawSignalHead(cx - wNS / 2 - 18, cy + wEW / 2 + 38, sStatus, 'S');
+        if (!is3Way || omitted !== 'T') drawSignalHead(cx + wNS / 2 + 38, cy + wEW / 2 + 18, tStatus, 'T');
+        if (!is3Way || omitted !== 'B') drawSignalHead(cx - wNS / 2 - 38, cy - wEW / 2 - 18, bStatus, 'B');
+
+        // --- RENDER HIGH-FIDELITY VEHICLES WITH CORRECT ORIENTATIONS ---
+        // Indonesian Left-Hand Traffic:
+        // - N: comes from North, moves SOUTH (downwards, +Y). Angle = Math.PI (faces South)
+        // - S: comes from South, moves NORTH (upwards, -Y). Angle = 0 (faces North)
+        // - E: comes from East, moves WEST (leftwards, -X). Angle = -Math.PI / 2 (faces West)
+        // - W: comes from West, moves EAST (rightwards, +X). Angle = Math.PI / 2 (faces East)
+        vehicles.forEach(v => {
+          let vx = 0, vy = 0, angle = 0;
+          const laneBaseOffset = (v.type === 'SM') ? 14 : 18;
+          const totalOffset = laneBaseOffset + v.sublane;
+
+          if (v.dir === 'N') {
+            // Travelling South along North road (on the left side, which is +X)
+            vx = cx + totalOffset;
+            vy = (cy - wEW / 2) - v.dist;
+            angle = Math.PI; // Face South (downwards)!
+          } else if (v.dir === 'S') {
+            // Travelling North along South road (on the left side, which is -X)
+            vx = cx - totalOffset;
+            vy = (cy + wEW / 2) + v.dist;
+            angle = 0; // Face North (upwards)!
+          } else if (v.dir === 'E') {
+            // Travelling West along East road (on the left side, which is +Y)
+            vx = (cx + wNS / 2) + v.dist;
+            vy = cy + totalOffset;
+            angle = -Math.PI / 2; // Face West (leftwards)!
+          } else if (v.dir === 'W') {
+            // Travelling East along West road (on the left side, which is -Y)
+            vx = (cx - wNS / 2) - v.dist;
+            vy = cy - totalOffset;
+            angle = Math.PI / 2; // Face East (rightwards)!
+          }
+
+          ctx.save();
+          ctx.translate(vx, vy);
+          ctx.rotate(angle);
+
+          if (v.type === 'SM') {
+            drawMotorcycle(ctx, v);
+          } else if (v.type === 'KR') {
+            drawCar(ctx, v);
+          } else {
+            drawHeavyVehicle(ctx, v);
+          }
+          ctx.restore();
+        });
+
+        // --- ELEGANT CORNER HUD CARDS (IN 4 OPEN CORNERS, ZERO OVERLAP) ---
+        const drawInfoCard = (x, y, w, h, app, status, armTitle) => {
+          ctx.save();
+          // Card Container
+          ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)';
+          ctx.beginPath();
+          ctx.roundRect(x, y, w, h, 8);
+          ctx.fill();
+
+          ctx.strokeStyle = status.color;
+          ctx.lineWidth = 1.5;
+          ctx.stroke();
+
+          // Header line with Status Pill
+          ctx.fillStyle = isDark ? '#ffffff' : '#0f172a';
+          ctx.font = 'bold 11px sans-serif';
+          ctx.textAlign = 'left';
+          ctx.fillText(armTitle, x + 10, y + 18);
+
+          // Status Badge Pill (e.g. 🟢 HIJAU 14s / 🔴 MERAH 32s)
+          ctx.fillStyle = status.color;
+          ctx.beginPath();
+          ctx.roundRect(x + w - 82, y + 6, 74, 18, 5);
+          ctx.fill();
+          ctx.fillStyle = '#ffffff';
+          ctx.font = 'bold 9.5px sans-serif';
+          ctx.textAlign = 'center';
+          ctx.fillText(`${status.label} ${status.seconds}s`, x + w - 45, y + 18.5);
+
+          // Sub-stats
+          const dirVehicles = vehicles.filter(v => v.dir === (app.id === 'U' ? 'N' : app.id === 'S' ? 'S' : app.id === 'T' ? 'E' : 'W') && v.dist >= 0);
+          const queued = dirVehicles.filter(v => v.inQueue || v.isBraking);
+          let maxQueueDist = 0;
+          if (queued.length > 0) maxQueueDist = Math.max(...queued.map(v => v.dist));
+          const simQueueMeters = Math.round(maxQueueDist / scale);
+          const pkjiQueueMeters = Math.round(app.queueLength || 35);
+
+          ctx.textAlign = 'left';
+          ctx.fillStyle = isDark ? '#94a3b8' : '#475569';
+          ctx.font = '10px sans-serif';
+          ctx.fillText(`Antrean Riil:`, x + 10, y + 36);
+          ctx.font = 'bold 10px sans-serif';
+          ctx.fillStyle = queued.length > 0 ? (status.state === 'RED' ? '#f87171' : '#34d399') : (isDark ? '#cbd5e1' : '#1e293b');
+          ctx.fillText(`${queued.length} kend (~${simQueueMeters} m)`, x + 80, y + 36);
+
+          ctx.fillStyle = isDark ? '#94a3b8' : '#475569';
+          ctx.font = '10px sans-serif';
+          ctx.fillText(`Batas PKJI:`, x + 10, y + 51);
+          ctx.font = 'bold 10px sans-serif';
+          ctx.fillStyle = isDark ? '#cbd5e1' : '#1e293b';
+          ctx.fillText(`${pkjiQueueMeters} m  |  C: ${app.C || '-'} smp/j`, x + 80, y + 51);
+
+          ctx.fillStyle = isDark ? '#94a3b8' : '#475569';
+          ctx.font = '10px sans-serif';
+          ctx.fillText(`Derajat Jenuh:`, x + 10, y + 66);
+          ctx.font = 'bold 10px sans-serif';
+          ctx.fillStyle = (app.DJ || 0) > 0.85 ? '#f87171' : '#34d399';
+          ctx.fillText(`DJ: ${(app.DJ || 0).toFixed(2)} (${(app.DJ || 0) > 0.85 ? 'Jenuh' : 'Baik'})`, x + 80, y + 66);
+
+          ctx.restore();
+        };
+
+        // 1. TOP-LEFT: Master Cycle HUD & Approach Barat (B)
+        // Master Cycle HUD
+        ctx.save();
+        ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.92)' : 'rgba(255, 255, 255, 0.95)';
+        ctx.beginPath();
+        ctx.roundRect(14, 14, 280, 58, 8);
+        ctx.fill();
+        ctx.strokeStyle = '#38bdf8';
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+
+        ctx.fillStyle = '#0284c7';
+        ctx.font = 'bold 11px sans-serif';
+        ctx.textAlign = 'left';
+        ctx.fillText(`SIMULASI SIKLUS: ${elapsedCycleTime.toFixed(1)}s / ${cycleTime}s`, 24, 32);
+
+        const activeP = signalPlan.phases.find(p => getPhaseStatus(p.phase).state === 'GREEN') 
+          || signalPlan.phases.find(p => getPhaseStatus(p.phase).state === 'AMBER');
+        
+        ctx.fillStyle = isDark ? '#ffffff' : '#0f172a';
+        ctx.font = '10px sans-serif';
+        ctx.fillText(`Fase Aktif: ${activeP ? `Fase ${activeP.phase} (${activeP.approaches.join(', ')})` : 'All-Red / Pengosongan'}`, 24, 47);
+        ctx.fillStyle = '#64748b';
+        ctx.font = '9.5px sans-serif';
+        ctx.fillText(`${is3Way ? 'Simpang 3 Lengan (T-Junction)' : 'Simpang 4 Lengan'}  |  ${simSpeed}x Speed`, 24, 60);
+        ctx.restore();
+
+        // Helper to draw omitted badge
+        const drawOmittedBadge = (x, y, w, h, label) => {
+          ctx.save();
+          ctx.fillStyle = isDark ? 'rgba(15, 23, 42, 0.65)' : 'rgba(241, 245, 249, 0.85)';
+          ctx.beginPath();
+          ctx.roundRect(x, y, w, h, 8);
+          ctx.fill();
+          ctx.strokeStyle = '#f59e0b';
+          ctx.lineWidth = 1;
+          ctx.setLineDash([4, 4]);
+          ctx.stroke();
+          ctx.fillStyle = '#f59e0b';
+          ctx.font = 'bold 10px sans-serif';
+          ctx.fillText(`⚠️ Simpang 3 Lengan (T-Junction)`, x + 12, y + 20);
+          ctx.fillStyle = isDark ? '#94a3b8' : '#64748b';
+          ctx.font = '9px sans-serif';
+          ctx.fillText(`Lengan ${label} Tidak Ada (Buntu)`, x + 12, y + 34);
+          ctx.restore();
+        };
+
+        // 1. TOP-LEFT: Approach Barat (B)
+        if (!is3Way || omitted !== 'B') {
+          drawInfoCard(14, 80, 280, 74, bApp, bStatus, `Barat (B) • Fase ${bApp.phase}`);
+        } else {
+          drawOmittedBadge(14, 80, 280, 48, 'Barat (B)');
+        }
+
+        // 2. TOP-RIGHT: Approach Utara (U)
+        if (!is3Way || omitted !== 'U') {
+          drawInfoCard(W - 294, 14, 280, 74, uApp, uStatus, `Utara (U) • Fase ${uApp.phase}`);
+        } else {
+          drawOmittedBadge(W - 294, 14, 280, 48, 'Utara (U)');
+        }
+
+        // 3. BOTTOM-LEFT: Approach Selatan (S)
+        if (!is3Way || omitted !== 'S') {
+          drawInfoCard(14, H - 88, 280, 74, sApp, sStatus, `Selatan (S) • Fase ${sApp.phase}`);
+        } else {
+          drawOmittedBadge(14, H - 64, 280, 48, 'Selatan (S)');
+        }
+
+        // 4. BOTTOM-RIGHT: Approach Timur (T)
+        if (!is3Way || omitted !== 'T') {
+          drawInfoCard(W - 294, H - 88, 280, 74, tApp, tStatus, `Timur (T) • Fase ${tApp.phase}`);
+        } else {
+          drawOmittedBadge(W - 294, H - 64, 280, 48, 'Timur (T)');
+        }
+      };
+
+      return (
+        <div className="flex flex-col items-center">
+          <div className="relative w-full max-w-4xl rounded-2xl overflow-hidden border border-slate-300 dark:border-slate-800 shadow-2xl bg-slate-900">
+            <canvas
+              ref={canvasRef}
+              width={820}
+              height={620}
+              className="w-full h-auto block"
+            />
+          </div>
+
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3 w-full max-w-4xl bg-white dark:bg-slate-900 p-4 rounded-xl border border-slate-200 dark:border-slate-800 shadow-sm text-xs">
+            <div className="flex items-center gap-2">
+              <button
+                onClick={() => setIsPlaying(!isPlaying)}
+                className={`px-3 py-1.5 rounded-lg font-semibold flex items-center gap-1.5 transition-colors ${
+                  isPlaying 
+                    ? 'bg-rose-500 hover:bg-rose-600 text-white' 
+                    : 'bg-emerald-500 hover:bg-emerald-600 text-white'
+                }`}>
+                <i className={`fa-solid fa-${isPlaying ? 'pause' : 'play'}`}></i>
+                <span>{isPlaying ? 'Pause' : 'Play'}</span>
+              </button>
+
+              <button
+                onClick={() => setElapsedCycleTime(0)}
+                className="px-3 py-1.5 bg-slate-200 dark:bg-slate-800 hover:bg-slate-300 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg transition-colors flex items-center gap-1">
+                <i className="fa-solid fa-rotate-left"></i>
+                <span>Reset Siklus</span>
+              </button>
+            </div>
+
+            <div className="flex items-center gap-2">
+              <span className="text-slate-500 font-medium">Kecepatan Animasi:</span>
+              {[0.5, 1, 2, 4].map(s => (
+                <button
+                  key={s}
+                  onClick={() => setSimSpeed(s)}
+                  className={`px-2.5 py-1 rounded text-xs font-bold transition-colors ${
+                    simSpeed === s 
+                      ? 'bg-blue-600 text-white shadow' 
+                      : 'bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 hover:bg-slate-200'
+                  }`}>
+                  {s}x
+                </button>
+              ))}
+            </div>
+
+            <div className="flex items-center gap-3 text-slate-500 dark:text-slate-400">
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-rose-500 shadow-sm"></span>
+                <span>Lampu Rem & Antrean Merah</span>
+              </div>
+              <div className="flex items-center gap-1">
+                <span className="inline-block w-3 h-3 rounded-full bg-emerald-500 shadow-sm"></span>
+                <span>Pelepasan Hijau</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      );
+    };
+
+    // --- MAIN REACT APPLICATION COMPONENT ---
+    function App() {
+      const [darkMode, setDarkMode] = useState(false);
+      const [activeTab, setActiveTab] = useState('input'); // 'input', 'results', 'simulation'
+      const [activeFormTab, setActiveFormTab] = useState('SA-I'); // 'SA-I', 'SA-II', 'SA-III', 'SA-IV', 'SA-V'
+      const [guidanceModal, setGuidanceModal] = useState({ isOpen: false, type: null });
+      const [appData, setAppData] = useState(DEFAULT_DATA);
+
+      // Initialize Theme
+      useEffect(() => {
+        if (darkMode) {
+          document.documentElement.classList.add('dark');
+        } else {
+          document.documentElement.classList.remove('dark');
+        }
+      }, [darkMode]);
+
+      // Handle Project Fields Change
+      const handleProjectChange = (field, val) => {
+        setAppData(prev => ({
+          ...prev,
+          project: {
+            ...prev.project,
+            [field]: val
+          }
+        }));
+      };
+
+      // Handle Approach Fields Change
+      const handleApproachChange = (appId, field, val) => {
+        setAppData(prev => ({
+          ...prev,
+          approaches: prev.approaches.map(a => 
+            a.id === appId ? { ...a, [field]: val } : a
+          )
+        }));
+      };
+
+      // Handle Approach Flows Change
+      const handleFlowChange = (appId, flowKey, val) => {
+        setAppData(prev => ({
+          ...prev,
+          approaches: prev.approaches.map(a => 
+            a.id === appId 
+              ? { ...a, flows: { ...a.flows, [flowKey]: parseFloat(val) || 0 } }
+              : a
+          )
+        }));
+      };
+
+      // Handle Approach Turns Change
+      const handleTurnChange = (appId, turnKey, val) => {
+        setAppData(prev => ({
+          ...prev,
+          approaches: prev.approaches.map(a => 
+            a.id === appId 
+              ? { ...a, turns: { ...a.turns, [turnKey]: parseFloat(val) || 0 } }
+              : a
+          )
+        }));
+      };
+
+      // Load Preset
+      const loadPreset = (presetKey) => {
+        if (PRESET_SCENARIOS[presetKey]) {
+          setAppData(JSON.parse(JSON.stringify(PRESET_SCENARIOS[presetKey].data)));
+        }
+      };
+
+      // --- PKJI 2023 CALCULATION ENGINE ---
+      const calculationResults = useMemo(() => {
+        const { junctionType = '4-WAY', tJunctionOmitted = 'B', citySize, envType, sideFriction, numPhases, amberTime, allRedTime, cycleTimeDesignOption, manualCycleTime } = appData.project;
+
+        // Filter active approaches for Simpang 3 Lengan (T-Junction) vs Simpang 4 Lengan
+        const activeApproaches = appData.approaches.filter(app => {
+          if (junctionType === '3-WAY') {
+            return app.id !== tJunctionOmitted;
+          }
+          return true;
+        });
+
+        // 1. Correction Factor Fcs
+        const Fcs = CITY_SIZE_FACTORS[citySize]?.factor || 1.0;
+
+        // 2. Correction Factor Fsf
+        const Fsf = SIDE_FRICTION_MATRIX[envType]?.[sideFriction] || 1.0;
+
+        // Process Approaches & Flows for active approaches
+        const approachCalcs = activeApproaches.map(app => {
+          const emp = EMP_PKJI[app.type];
+          
+          // Arus smp/jam
+          const qKR = app.flows.KR * emp.KR;
+          const qKB = app.flows.KB * emp.KB;
+          const qSM = app.flows.SM * emp.SM;
+          const qVehicles = app.flows.KR + app.flows.KB + app.flows.SM;
+          const qSmp = qKR + qKB + qSM;
+
+          // Proporsi Belok
+          const pLT = app.turns.LT / 100;
+          const pST = app.turns.ST / 100;
+          const pRT = app.turns.RT / 100;
+
+          // Lebar Efektif (We)
+          // Berdasarkan PKJI 2023, jika ada LTOR, arus LT dikeluarkan dari waktu hijau
+          const effectiveWe = app.We;
+
+          // Arus Jenuh Dasar S0 (skr/jam hijau)
+          // PKJI 2023 formula terlindung: S0 = 600 * We (untuk We >= 3m)
+          let S0 = 600 * effectiveWe;
+          if (app.type === 'O') {
+            // Formula terlawan jika ada arus konflik
+            S0 = 500 * effectiveWe;
+          }
+
+          // Faktor Koreksi Gradien (FG)
+          // PKJI 2023: FG = 1.0 - (0.01 * %G)
+          const FG = 1.0 - (0.01 * app.gradient);
+
+          // Faktor Koreksi Parkir (Fp)
+          // Jika ada parkir on-street dalam 30m: Fp = [p - (1.83 - 0.0024*Lp)*We/3.0 - (Lp/3.0)] ...
+          let Fp = 1.0;
+          if (app.parkingDist < 30) {
+            Fp = Math.max(0.65, 1.0 - (0.15 * (30 - app.parkingDist) / 30));
+          }
+
+          // Faktor Koreksi Belok Kanan (FRT)
+          // PKJI 2023: untuk terlindung tanpa median, FRT = 1.0 + pRT * 0.26
+          let FRT = 1.0;
+          if (app.type === 'P' && !app.hasMedian) {
+            FRT = 1.0 + (pRT * 0.26);
+          }
+
+          // Faktor Koreksi Belok Kiri (FLT)
+          let FLT = 1.0;
+          if (!app.ltor) {
+            FLT = 1.0 - (pLT * 0.16);
+          }
+
+          // Arus Jenuh Terkoreksi (S)
+          const S = S0 * Fcs * Fsf * FG * Fp * FRT * FLT;
+
+          // Arus pergerakan desain (Q)
+          const Q = app.ltor ? (qSmp * (1 - pLT)) : qSmp;
+
+          // Rasio Arus (Y = Q / S)
+          const Y = S > 0 ? (Q / S) : 0;
+
+          return {
+            ...app,
+            emp,
+            qKR,
+            qKB,
+            qSM,
+            qVehicles,
+            qSmp,
+            Q,
+            pLT,
+            pST,
+            pRT,
+            S0,
+            FG,
+            Fp,
+            FRT,
+            FLT,
+            Fcs,
+            Fsf,
+            S,
+            Y
+          };
+        });
+
+        // 3. Penentuan Rasio Fase Kritis (IFR / Sum Ycrit)
+        const phaseGroups = {};
+        for (let p = 1; p <= numPhases; p++) {
+          phaseGroups[p] = approachCalcs.filter(a => a.phase === p);
+        }
+
+        const phaseDetails = [];
+        let sumYcrit = 0;
+
+        for (let p = 1; p <= numPhases; p++) {
+          const appsInPhase = phaseGroups[p] || [];
+          const maxY = appsInPhase.length > 0 ? Math.max(...appsInPhase.map(a => a.Y)) : 0;
+          const criticalApp = appsInPhase.find(a => a.Y === maxY) || null;
+          sumYcrit += maxY;
+          phaseDetails.push({
+            phase: p,
+            approaches: appsInPhase.map(a => a.id),
+            criticalAppId: criticalApp ? criticalApp.id : '-',
+            Ycrit: maxY
+          });
+        }
+
+        // 4. Waktu Hilang Total (L)
+        // L = Sum (kuning + all-red)
+        const lostTimePerPhase = amberTime + allRedTime;
+        const totalLostTime = numPhases * lostTimePerPhase;
+
+        // 5. Waktu Siklus Webster (c)
+        // c = (1.5 * L + 5) / (1 - sumYcrit)
+        let websterCycle = 0;
+        let isOversaturated = false;
+        if (sumYcrit >= 0.95) {
+          isOversaturated = true;
+          websterCycle = 180; // Over-saturated bound
+        } else {
+          websterCycle = Math.round((1.5 * totalLostTime + 5) / (1 - sumYcrit));
+          // Batasan praktis PKJI 2023
+          const minC = numPhases * 20;
+          const maxC = 160;
+          websterCycle = Math.max(minC, Math.min(maxC, websterCycle));
+        }
+
+        const designCycleTime = cycleTimeDesignOption === 'manual' ? manualCycleTime : websterCycle;
+
+        // 6. Alokasi Waktu Hijau Efektif (gi)
+        // gi = (c - L) * (Ycrit_i / sumYcrit)
+        const totalEffectiveGreen = Math.max(10, designCycleTime - totalLostTime);
+
+        const phasesWithTiming = phaseDetails.map((pd, idx) => {
+          let greenTime = 0;
+          if (sumYcrit > 0) {
+            greenTime = Math.round(totalEffectiveGreen * (pd.Ycrit / sumYcrit));
+          } else {
+            greenTime = Math.round(totalEffectiveGreen / numPhases);
+          }
+          // Minimal waktu hijau PKJI adalah 10 detik
+          greenTime = Math.max(10, greenTime);
+
+          return {
+            ...pd,
+            greenTime,
+            amberDuration: amberTime,
+            allRedDuration: allRedTime
+          };
+        });
+
+        // Hitung timing timeline untuk simulasi kanvas
+        let currentTimeline = 0;
+        const phasesWithTimeline = phasesWithTiming.map(p => {
+          const startGreen = currentTimeline;
+          const endGreen = startGreen + p.greenTime;
+          currentTimeline = endGreen + p.amberDuration + p.allRedDuration;
+          return {
+            ...p,
+            startGreen,
+            endGreen
+          };
+        });
+
+        // 7. Evaluasi Kapasitas & Kinerja Per Pendekat (SA-IV & SA-V)
+        let totalWeightedDelay = 0;
+        let totalIntersectionVolume = 0;
+
+        const evaluatedApproaches = approachCalcs.map(app => {
+          const phaseInfo = phasesWithTimeline.find(p => p.phase === app.phase) || { greenTime: 20 };
+          const g = phaseInfo.greenTime;
+          const greenRatio = g / designCycleTime;
+
+          // Kapasitas C = S * (g / c)
+          const C = Math.round(app.S * greenRatio);
+
+          // Derajat Kejenuhan DJ = Q / C
+          const DJ = C > 0 ? (app.Q / C) : 1.0;
+
+          // Tundaan Lalu Lintas Rata-Rata (DT) PKJI 2023 / Akçelik
+          // DT = c * 0.5 * (1 - g/c)^2 / (1 - (g/c) * min(1, DJ)) + NQ2 * 3600 / C
+          const term1 = designCycleTime * 0.5 * Math.pow(1 - greenRatio, 2) / (1 - greenRatio * Math.min(1.0, DJ));
+          
+          let term2 = 0;
+          if (DJ > 0.5) {
+            // Tundaan akibat antrean acak & kelebihan beban
+            const factorSub = (DJ - 1.0);
+            const insideSqrt = Math.pow(factorSub, 2) + (8 * (DJ - 0.5) / Math.max(1, C));
+            term2 = 1800 * (factorSub + Math.sqrt(Math.max(0, insideSqrt)));
+          }
+
+          const DT = term1 + term2;
+
+          // Tundaan Geometrik (DG)
+          // DG = (1 - DJ) * pStop * 6 + DJ * 4
+          const pStop = Math.min(1.0, 0.8 * (1 - greenRatio) / (1 - greenRatio * Math.min(1.0, DJ)));
+          const DG = ((1 - Math.min(1.0, DJ)) * pStop * 6) + (Math.min(1.0, DJ) * 4);
+
+          // Tundaan Total Pendekat T = DT + DG
+          const T = DT + DG;
+
+          // Panjang Antrean (PA)
+          // NQ1 = smp antrean fase hijau sebelumnya
+          let NQ1 = 0;
+          if (DJ > 0.5) {
+            NQ1 = 0.25 * C * ( (DJ - 1) + Math.sqrt(Math.pow(DJ - 1, 2) + (8 * (DJ - 0.5) / C)) );
+          }
+          // NQ2 = smp yang datang saat fase merah
+          const NQ2 = (app.Q / 3600) * (designCycleTime - g);
+          const NQtotal = NQ1 + NQ2;
+          const queueLength = (NQtotal * 20) / Math.max(2.5, app.We); // meter
+
+          totalWeightedDelay += (app.Q * T);
+          totalIntersectionVolume += app.Q;
+
+          return {
+            ...app,
+            g,
+            greenRatio,
+            C,
+            DJ,
+            DT,
+            DG,
+            T,
+            NQtotal,
+            queueLength
+          };
+        });
+
+        // 8. Kinerja Simpang Keseluruhan
+        const averageIntersectionDelay = totalIntersectionVolume > 0 
+          ? (totalWeightedDelay / totalIntersectionVolume) 
+          : 0;
+
+        // Level of Service (LOS) PKJI 2023
+        let LOS = 'A';
+        let losColor = 'bg-emerald-500 text-white';
+        let losDesc = 'Arus bebas, tundaan sangat rendah';
+
+        if (averageIntersectionDelay <= 5.0) {
+          LOS = 'A'; losColor = 'bg-emerald-500 text-white'; losDesc = 'Sangat Baik (Tundaan ≤ 5s)';
+        } else if (averageIntersectionDelay <= 15.0) {
+          LOS = 'B'; losColor = 'bg-teal-500 text-white'; losDesc = 'Baik (Tundaan 5.1 - 15s)';
+        } else if (averageIntersectionDelay <= 25.0) {
+          LOS = 'C'; losColor = 'bg-blue-500 text-white'; losDesc = 'Sedang / Stabil (Tundaan 15.1 - 25s)';
+        } else if (averageIntersectionDelay <= 40.0) {
+          LOS = 'D'; losColor = 'bg-amber-500 text-white'; losDesc = 'Mendekati Tidak Stabil (Tundaan 25.1 - 40s)';
+        } else if (averageIntersectionDelay <= 60.0) {
+          LOS = 'E'; losColor = 'bg-orange-500 text-white'; losDesc = 'Kapasitas Terlampaui / Kritis (Tundaan 40.1 - 60s)';
+        } else {
+          LOS = 'F'; losColor = 'bg-rose-600 text-white'; losDesc = 'Jenuh / Macet Parah (Tundaan > 60s)';
+        }
+
+        // Trigger confetti if optimal LOS A or B is reached
+        if (LOS === 'A' || LOS === 'B') {
+          try {
+            if (window.confetti && typeof window.confetti === 'function') {
+              window.confetti({ particleCount: 30, spread: 60, origin: { y: 0.8 } });
+            }
+          } catch(e) {}
+        }
+
+        return {
+          junctionType,
+          tJunctionOmitted,
+          Fcs,
+          Fsf,
+          totalLostTime,
+          sumYcrit,
+          websterCycle,
+          designCycleTime,
+          signalPlan: {
+            phases: phasesWithTimeline
+          },
+          approaches: evaluatedApproaches,
+          averageIntersectionDelay,
+          LOS,
+          losColor,
+          losDesc,
+          isOversaturated
+        };
+      }, [appData]);
+
+      // Excel / CSV Export Function
+      const handleExportExcel = () => {
+        try {
+          const wb = XLSX.utils.book_new();
+
+          // Sheet 1: SA-I & Umum
+          const sa1Rows = [
+            ["FORMULIR SA-I: DATA GEOMETRI, LINGKUNGAN, DAN PENGATURAN APILL"],
+            ["Pedoman: Pedoman Kapasitas Jalan Indonesia (PKJI 2023) - Bina Marga"],
+            [""],
+            ["Nama Simpang", appData.project.intersectionName],
+            ["Kota / Wilayah", appData.project.city],
+            ["Ukuran Kota (Fcs)", appData.project.citySize, calculationResults.Fcs],
+            ["Tipe Lingkungan", appData.project.envType],
+            ["Hambatan Samping (Fsf)", appData.project.sideFriction, calculationResults.Fsf],
+            ["Jumlah Fase", appData.project.numPhases],
+            ["Waktu Siklus Desain", `${calculationResults.designCycleTime} detik`],
+            [""],
+            ["DATA PENDEKAT"],
+            ["Pendekat", "Arah Jalan", "Fase", "Tipe", "Lebar Masuk We (m)", "Lebar Keluar Wout (m)", "Median", "Gradien (%)", "LTOR"]
+          ];
+
+          calculationResults.approaches.forEach(a => {
+            sa1Rows.push([
+              a.id, a.name, a.phase, a.type === 'P' ? 'Terlindung (P)' : 'Terlawan (O)',
+              a.We, a.Wout, a.hasMedian ? `Ada (${a.medianWidth}m)` : 'Tidak Ada',
+              `${a.gradient}%`, a.ltor ? 'Ya' : 'Tidak'
+            ]);
+          });
+
+          const ws1 = XLSX.utils.aoa_to_sheet(sa1Rows);
+          XLSX.utils.book_append_sheet(wb, ws1, "SA-I Geometri");
+
+          // Sheet 2: SA-II Arus Lalu Lintas
+          const sa2Rows = [
+            ["FORMULIR SA-II: ARUS LALU LINTAS & EKIVALEN MOBIL PENUMPANG (EMP)"],
+            [""],
+            ["Pendekat", "KR (kend/jam)", "KB (kend/jam)", "SM (kend/jam)", "Total Kend/jam", "EMP KR", "EMP KB", "EMP SM", "Q (smp/jam)", "LT (%)", "ST (%)", "RT (%)"]
+          ];
+          calculationResults.approaches.forEach(a => {
+            sa2Rows.push([
+              a.id, a.flows.KR, a.flows.KB, a.flows.SM, a.qVehicles,
+              a.emp.KR, a.emp.KB, a.emp.SM, Math.round(a.qSmp),
+              a.turns.LT, a.turns.ST, a.turns.RT
+            ]);
+          });
+          const ws2 = XLSX.utils.aoa_to_sheet(sa2Rows);
+          XLSX.utils.book_append_sheet(wb, ws2, "SA-II Arus Lalu Lintas");
+
+          // Sheet 3: SA-III Sinyal & Siklus
+          const sa3Rows = [
+            ["FORMULIR SA-III: PENENTUAN WAKTU SINYAL & SIKLUS (WEBSTER)"],
+            [""],
+            ["Waktu Hilang Total (L)", `${calculationResults.totalLostTime} detik`],
+            ["Jumlah Rasio Kritis (Sum Ycrit)", calculationResults.sumYcrit.toFixed(3)],
+            ["Waktu Siklus Pra-penyesuaian (Webster)", `${calculationResults.websterCycle} detik`],
+            ["Waktu Siklus Ditetapkan (c)", `${calculationResults.designCycleTime} detik`],
+            [""],
+            ["Rincian Per Fase"],
+            ["Fase", "Daftar Pendekat", "Pendekat Kritis", "Y Kritis", "Waktu Hijau g (detik)"]
+          ];
+          calculationResults.signalPlan.phases.forEach(p => {
+            sa3Rows.push([
+              `Fase ${p.phase}`, p.approaches.join(", "), p.criticalAppId, p.Ycrit.toFixed(3), `${p.greenTime} s`
+            ]);
+          });
+          const ws3 = XLSX.utils.aoa_to_sheet(sa3Rows);
+          XLSX.utils.book_append_sheet(wb, ws3, "SA-III Sinyal");
+
+          // Sheet 4: SA-IV Kapasitas
+          const sa4Rows = [
+            ["FORMULIR SA-IV: PERHITUNGAN KAPASITAS APILL (PKJI 2023)"],
+            [""],
+            ["Pendekat", "S0 Dasar", "Fcs", "Fsf", "FG", "Fp", "FRT", "FLT", "S Terkoreksi", "Hijau g (s)", "Siklus c (s)", "Rasio g/c", "Kapasitas C (smp/jam)"]
+          ];
+          calculationResults.approaches.forEach(a => {
+            sa4Rows.push([
+              a.id, a.S0, a.Fcs, a.Fsf, a.FG.toFixed(2), a.Fp.toFixed(2),
+              a.FRT.toFixed(2), a.FLT.toFixed(2), Math.round(a.S),
+              a.g, calculationResults.designCycleTime, a.greenRatio.toFixed(3), a.C
+            ]);
+          });
+          const ws4 = XLSX.utils.aoa_to_sheet(sa4Rows);
+          XLSX.utils.book_append_sheet(wb, ws4, "SA-IV Kapasitas");
+
+          // Sheet 5: SA-V Kinerja & Tingkat Pelayanan (LOS)
+          const sa5Rows = [
+            ["FORMULIR SA-V: EVALUASI KINERJA SIMPANG & TINGKAT PELAYANAN (LOS)"],
+            [""],
+            ["Tundaan Rata-rata Simpang", `${calculationResults.averageIntersectionDelay.toFixed(2)} detik/smp`],
+            ["Tingkat Pelayanan (LOS)", calculationResults.LOS, calculationResults.losDesc],
+            [""],
+            ["Pendekat", "Arus Q (smp/jam)", "Kapasitas C", "Derajat Kejenuhan (DJ)", "Tundaan DT (s)", "Tundaan DG (s)", "Tundaan Total (s)", "Panjang Antrean (m)"]
+          ];
+          calculationResults.approaches.forEach(a => {
+            sa5Rows.push([
+              a.id, Math.round(a.Q), a.C, a.DJ.toFixed(2),
+              a.DT.toFixed(1), a.DG.toFixed(1), a.T.toFixed(1),
+              `${Math.round(a.queueLength)} m`
+            ]);
+          });
+          const ws5 = XLSX.utils.aoa_to_sheet(sa5Rows);
+          XLSX.utils.book_append_sheet(wb, ws5, "SA-V Kinerja");
+
+          // Save File
+          const filename = `SIMPASI_PKJI2023_${appData.project.intersectionName.replace(/[^a-zA-Z0-9]/g, '_')}.xlsx`;
+          XLSX.writeFile(wb, filename);
+        } catch (err) {
+          alert("Gagal mengunduh file Excel: " + err.message);
+        }
+      };
+
+      // Export JSON Project File
+      const handleExportJSON = () => {
+        const jsonStr = "data:text/json;charset=utf-8," + encodeURIComponent(JSON.stringify(appData, null, 2));
+        const dlAnchor = document.createElement('a');
+        dlAnchor.setAttribute("href", jsonStr);
+        dlAnchor.setAttribute("download", `SIMPASI_${appData.project.intersectionName.replace(/\s+/g, '_')}.json`);
+        dlAnchor.click();
+      };
+
+      // Import JSON Project File
+      const handleImportJSON = (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const reader = new FileReader();
+        reader.onload = (event) => {
+          try {
+            const parsed = JSON.parse(event.target.result);
+            if (parsed.project && parsed.approaches) {
+              setAppData(parsed);
+              alert("Data proyek SIMPASI berhasil dimuat!");
+            } else {
+              alert("Format berkas JSON tidak sesuai spesifikasi SIMPASI.");
+            }
+          } catch(err) {
+            alert("Gagal membaca berkas: " + err.message);
+          }
+        };
+        reader.readAsText(file);
+      };
+
+      return (
+        <div className="min-h-screen flex flex-col font-sans">
+          {/* GUIDANCE MODAL */}
+          <GuidanceModal
+            isOpen={guidanceModal.isOpen}
+            type={guidanceModal.type}
+            onClose={() => setGuidanceModal({ isOpen: false, type: null })}
+          />
+
+          {/* TOP ACADEMIC HEADER */}
+          <header className="bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-800 shadow-sm sticky top-0 z-40">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex flex-wrap items-center justify-between gap-4">
+              
+              {/* Branding with UNTIDAR Logo */}
+              <div className="flex items-center gap-4">
+                <div className="flex items-center justify-center bg-white p-1 rounded-xl shadow-md border border-slate-200 dark:border-slate-700">
+                  <img
+                    src="https://upload.wikimedia.org/wikipedia/commons/4/43/Logo_UNTIDAR_%28Universitas_Tidar%29_Magelang.png"
+                    alt="Logo Universitas Tidar"
+                    className="h-12 w-auto object-contain"
+                    onError={(e) => {
+                      // Fallback icon if offline
+                      e.target.style.display = 'none';
+                      e.target.parentNode.innerHTML = '<span class="text-amber-500 font-black text-2xl px-2">UNTIDAR</span>';
+                    }}
+                  />
+                </div>
+                <div>
+                  <div className="flex items-center gap-2">
+                    <span className="bg-amber-500 text-white font-extrabold text-xs px-2 py-0.5 rounded tracking-wider uppercase">
+                      PKJI 2023
+                    </span>
+                    <h1 className="text-xl sm:text-2xl font-black text-slate-900 dark:text-white tracking-tight">
+                      SIMPASI
+                    </h1>
+                  </div>
+                  <p className="text-xs text-slate-500 dark:text-slate-400 font-medium">
+                    Sistem Perencanaan & Analisis Simpang APILL • <span className="text-blue-600 dark:text-blue-400 font-semibold">Universitas Tidar</span>
+                  </p>
+                </div>
+              </div>
+
+              {/* Action Buttons & Dark Mode Toggle */}
+              <div className="flex items-center gap-3">
+                {/* Print button */}
+                <button
+                  onClick={() => window.print()}
+                  title="Cetak Formulir Standar PKJI"
+                  className="px-3 py-2 bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl text-xs font-semibold flex items-center gap-2 transition-colors">
+                  <i className="fa-solid fa-print"></i>
+                  <span className="hidden sm:inline">Cetak PDF</span>
+                </button>
+
+                {/* Export Excel */}
+                <button
+                  onClick={handleExportExcel}
+                  className="px-3 py-2 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl text-xs font-semibold flex items-center gap-2 shadow-sm transition-colors">
+                  <i className="fa-solid fa-file-excel"></i>
+                  <span>Ekspor Excel (SA Series)</span>
+                </button>
+
+                {/* Dark Mode Sakelar */}
+                <button
+                  onClick={() => setDarkMode(!darkMode)}
+                  className="w-10 h-10 rounded-xl bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-amber-400 hover:bg-slate-200 dark:hover:bg-slate-700 flex items-center justify-center transition-colors shadow-inner"
+                  title="Ganti Tema Gelap / Terang">
+                  <i className={`fa-solid fa-${darkMode ? 'sun' : 'moon'} text-base`}></i>
+                </button>
+              </div>
+            </div>
+
+            {/* Navigation Tabs */}
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 flex border-t border-slate-100 dark:border-slate-800/60 overflow-x-auto no-print">
+              <button
+                onClick={() => setActiveTab('input')}
+                className={`py-3 px-4 font-bold text-xs uppercase tracking-wider flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                  activeTab === 'input'
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}>
+                <i className="fa-solid fa-sliders"></i>
+                1. Input Parameter & Arus
+              </button>
+
+              <button
+                onClick={() => setActiveTab('results')}
+                className={`py-3 px-4 font-bold text-xs uppercase tracking-wider flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                  activeTab === 'results'
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}>
+                <i className="fa-solid fa-table-list"></i>
+                2. Formulir SA (SA-I s/d SA-V)
+              </button>
+
+              <button
+                onClick={() => setActiveTab('simulation')}
+                className={`py-3 px-4 font-bold text-xs uppercase tracking-wider flex items-center gap-2 border-b-2 transition-all whitespace-nowrap ${
+                  activeTab === 'simulation'
+                    ? 'border-blue-600 text-blue-600 dark:text-blue-400'
+                    : 'border-transparent text-slate-500 hover:text-slate-700 dark:hover:text-slate-300'
+                }`}>
+                <i className="fa-solid fa-traffic-light"></i>
+                3. Simulasi 2D Top-Down
+              </button>
+            </div>
+          </header>
+
+          {/* MAIN CONTENT AREA */}
+          <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 py-6">
+            
+            {/* Quick Status Pill Bar */}
+            <div className="mb-6 bg-gradient-to-r from-blue-900 to-indigo-900 text-white rounded-2xl p-4 shadow-lg flex flex-wrap items-center justify-between gap-4">
+              <div>
+                <div className="text-xs uppercase tracking-wider text-blue-200 font-semibold">Hasil Kinerja Simpang Saat Ini</div>
+                <div className="text-lg font-bold flex items-center gap-3">
+                  <span>{appData.project.intersectionName}</span>
+                  <span className={`px-2.5 py-0.5 rounded-full text-xs font-black ${calculationResults.losColor}`}>
+                    LOS {calculationResults.LOS}
+                  </span>
+                </div>
+              </div>
+
+              <div className="flex flex-wrap items-center gap-6 text-xs">
+                <div>
+                  <div className="text-blue-200">Tundaan Rata-rata</div>
+                  <div className="text-base font-bold">{calculationResults.averageIntersectionDelay.toFixed(2)} detik/smp</div>
+                </div>
+                <div>
+                  <div className="text-blue-200">Waktu Siklus Desain (c)</div>
+                  <div className="text-base font-bold">{calculationResults.designCycleTime} detik</div>
+                </div>
+                <div>
+                  <div className="text-blue-200">Rasio Kritis (&Sigma;Y)</div>
+                  <div className="text-base font-bold">{calculationResults.sumYcrit.toFixed(3)}</div>
+                </div>
+              </div>
+            </div>
+
+            {/* TAB 1: INPUT FORM */}
+            {activeTab === 'input' && (
+              <div className="space-y-6">
+                
+                {/* Presets & Project Info Card */}
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-5 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <h2 className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                      <i className="fa-solid fa-road text-amber-500"></i>
+                      Data Proyek & Preset Cepat
+                    </h2>
+
+                    {/* Preset Buttons */}
+                    <div className="flex items-center gap-2">
+                      <span className="text-xs text-slate-500">Contoh Kasus:</span>
+                      <button
+                        onClick={() => loadPreset('standard')}
+                        className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-medium transition-colors">
+                        Simpang 4 Canguk
+                      </button>
+                      <button
+                        onClick={() => loadPreset('tJunction')}
+                        className="px-2.5 py-1 text-xs bg-blue-100 hover:bg-blue-200 dark:bg-blue-950/60 text-blue-700 dark:text-blue-300 border border-blue-300 dark:border-blue-700 rounded-lg font-bold transition-colors">
+                        Simpang 3 T Kebonpolo
+                      </button>
+                      <button
+                        onClick={() => loadPreset('twoPhase')}
+                        className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-medium transition-colors">
+                        Ring Road 2-Fase
+                      </button>
+                      <button
+                        onClick={() => loadPreset('heavyMotorcycle')}
+                        className="px-2.5 py-1 text-xs bg-slate-100 hover:bg-slate-200 dark:bg-slate-800 dark:hover:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-lg font-medium transition-colors">
+                        Padat SM Kampus
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs">
+                    <div>
+                      <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">Nama Simpang</label>
+                      <input
+                        type="text"
+                        value={appData.project.intersectionName}
+                        onChange={(e) => handleProjectChange('intersectionName', e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100"
+                      />
+                    </div>
+
+                    <div>
+                      <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">Kota / Lokasi</label>
+                      <input
+                        type="text"
+                        value={appData.project.city}
+                        onChange={(e) => handleProjectChange('city', e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100"
+                      />
+                    </div>
+
+                    {/* Tipe Simpang (Simpang 4 vs Simpang 3 Lengan) */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-slate-600 dark:text-slate-400 font-semibold">Tipe Simpang</label>
+                        <button
+                          type="button"
+                          onClick={() => setGuidanceModal({ isOpen: true, type: 'junctionType' })}
+                          className="text-amber-500 hover:text-amber-600 text-[11px] font-semibold flex items-center gap-1">
+                          💡 Panduan
+                        </button>
+                      </div>
+                      <select
+                        value={appData.project.junctionType || '4-WAY'}
+                        onChange={(e) => {
+                          const val = e.target.value;
+                          handleProjectChange('junctionType', val);
+                          if (val === '3-WAY' && appData.project.numPhases > 3) {
+                            handleProjectChange('numPhases', 2);
+                          }
+                        }}
+                        className="w-full px-3 py-2 bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-blue-700 dark:text-blue-300 font-bold">
+                        <option value="4-WAY">Simpang 4 Lengan (Silang Penuh)</option>
+                        <option value="3-WAY">Simpang 3 Lengan (T-Junction)</option>
+                      </select>
+                    </div>
+
+                    {/* Jika Simpang 3: Konfigurasi Lengan Buntu / Ditiadakan */}
+                    {(appData.project.junctionType === '3-WAY') ? (
+                      <div>
+                        <label className="block text-amber-700 dark:text-amber-300 font-bold mb-1">
+                          Bentuk Simpang 3 (Lengan Buntu):
+                        </label>
+                        <select
+                          value={appData.project.tJunctionOmitted || 'B'}
+                          onChange={(e) => handleProjectChange('tJunctionOmitted', e.target.value)}
+                          className="w-full px-3 py-2 bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded-xl outline-none font-bold text-amber-800 dark:text-amber-300">
+                          <option value="B">T: U - S - T (Lengan Barat Tidak Ada)</option>
+                          <option value="U">T: B - T - S (Lengan Utara Tidak Ada)</option>
+                          <option value="S">T: B - T - U (Lengan Selatan Tidak Ada)</option>
+                          <option value="T">T: U - S - B (Lengan Timur Tidak Ada)</option>
+                        </select>
+                      </div>
+                    ) : (
+                      /* City Size with Tooltip for Simpang 4 */
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-slate-600 dark:text-slate-400 font-semibold">Ukuran Kota</label>
+                          <button
+                            type="button"
+                            onClick={() => setGuidanceModal({ isOpen: true, type: 'citySize' })}
+                            className="text-amber-500 hover:text-amber-600 text-[11px] font-semibold flex items-center gap-1">
+                            💡 Panduan
+                          </button>
+                        </div>
+                        <select
+                          value={appData.project.citySize}
+                          onChange={(e) => handleProjectChange('citySize', e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100">
+                          {Object.keys(CITY_SIZE_FACTORS).map(size => (
+                            <option key={size} value={size}>
+                              {size} (Fcs: {CITY_SIZE_FACTORS[size].factor})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Jika Simpang 3: Baris kedua ukuran kota & lingkungan */}
+                    {(appData.project.junctionType === '3-WAY') && (
+                      <div>
+                        <div className="flex items-center justify-between mb-1">
+                          <label className="text-slate-600 dark:text-slate-400 font-semibold">Ukuran Kota</label>
+                          <button
+                            type="button"
+                            onClick={() => setGuidanceModal({ isOpen: true, type: 'citySize' })}
+                            className="text-amber-500 hover:text-amber-600 text-[11px] font-semibold flex items-center gap-1">
+                            💡 Panduan
+                          </button>
+                        </div>
+                        <select
+                          value={appData.project.citySize}
+                          onChange={(e) => handleProjectChange('citySize', e.target.value)}
+                          className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100">
+                          {Object.keys(CITY_SIZE_FACTORS).map(size => (
+                            <option key={size} value={size}>
+                              {size} (Fcs: {CITY_SIZE_FACTORS[size].factor})
+                            </option>
+                          ))}
+                        </select>
+                      </div>
+                    )}
+
+                    {/* Environment Type */}
+                    <div>
+                      <label className="block text-slate-600 dark:text-slate-400 font-semibold mb-1">Tipe Lingkungan Jalan</label>
+                      <select
+                        value={appData.project.envType}
+                        onChange={(e) => handleProjectChange('envType', e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100">
+                        <option value="COM">Komersial (Pertokoan, Pasar, CBD)</option>
+                        <option value="RES">Permukiman / Perumahan</option>
+                        <option value="RA">Akses Terbatas / Luar Kota</option>
+                      </select>
+                    </div>
+
+                    {/* Side Friction with Tooltip */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-slate-600 dark:text-slate-400 font-semibold">Hambatan Samping</label>
+                        <button
+                          type="button"
+                          onClick={() => setGuidanceModal({ isOpen: true, type: 'sideFriction' })}
+                          className="text-amber-500 hover:text-amber-600 text-[11px] font-semibold flex items-center gap-1">
+                          💡 Panduan
+                        </button>
+                      </div>
+                      <select
+                        value={appData.project.sideFriction}
+                        onChange={(e) => handleProjectChange('sideFriction', e.target.value)}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100">
+                        <option value="VL">Sangat Rendah (VL)</option>
+                        <option value="L">Rendah (L)</option>
+                        <option value="M">Sedang (M)</option>
+                        <option value="H">Tinggi (H)</option>
+                        <option value="VH">Sangat Tinggi (VH)</option>
+                      </select>
+                    </div>
+
+                    {/* Number of Phases with Tooltip */}
+                    <div>
+                      <div className="flex items-center justify-between mb-1">
+                        <label className="text-slate-600 dark:text-slate-400 font-semibold">Jumlah Fase Sinyal</label>
+                        <button
+                          type="button"
+                          onClick={() => setGuidanceModal({ isOpen: true, type: 'numPhases' })}
+                          className="text-amber-500 hover:text-amber-600 text-[11px] font-semibold flex items-center gap-1">
+                          💡 Panduan (Pros & Cons)
+                        </button>
+                      </div>
+                      <select
+                        value={appData.project.numPhases}
+                        onChange={(e) => handleProjectChange('numPhases', parseInt(e.target.value))}
+                        className="w-full px-3 py-2 bg-slate-50 dark:bg-slate-800/80 border border-slate-200 dark:border-slate-700 rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-slate-800 dark:text-slate-100">
+                        <option value={2}>2 Fase (Sangat Efisien untuk Simpang 3 / 4)</option>
+                        <option value={3}>3 Fase (Utara-Selatan, Timur, Barat)</option>
+                        {appData.project.junctionType !== '3-WAY' && (
+                          <option value={4}>4 Fase (1 Fase Mandiri Tiap Lengan)</option>
+                        )}
+                      </select>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 pt-3 border-t border-slate-100 dark:border-slate-800 flex flex-wrap items-center justify-between gap-4 text-xs">
+                    <div className="flex items-center gap-4">
+                      <div>
+                        <span className="text-slate-500">Waktu Kuning: </span>
+                        <input
+                          type="number"
+                          value={appData.project.amberTime}
+                          onChange={(e) => handleProjectChange('amberTime', parseFloat(e.target.value) || 3)}
+                          className="w-14 px-2 py-1 ml-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                        /> s
+                      </div>
+                      <div>
+                        <span className="text-slate-500">Merah Semua (All-Red): </span>
+                        <input
+                          type="number"
+                          value={appData.project.allRedTime}
+                          onChange={(e) => handleProjectChange('allRedTime', parseFloat(e.target.value) || 2)}
+                          className="w-14 px-2 py-1 ml-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                        /> s
+                      </div>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-500">Waktu Siklus:</span>
+                      <select
+                        value={appData.project.cycleTimeDesignOption}
+                        onChange={(e) => handleProjectChange('cycleTimeDesignOption', e.target.value)}
+                        className="px-2 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded">
+                        <option value="auto">Otomatis (Rumus Webster)</option>
+                        <option value="manual">Manual Ditetapkan</option>
+                      </select>
+                      {appData.project.cycleTimeDesignOption === 'manual' && (
+                        <input
+                          type="number"
+                          value={appData.project.manualCycleTime}
+                          onChange={(e) => handleProjectChange('manualCycleTime', parseInt(e.target.value) || 90)}
+                          className="w-16 px-2 py-1 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                        />
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                {/* Approaches Geometri & Arus Input Cards */}
+                <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+                  {appData.approaches.map((app) => {
+                    const isOmittedArm = (appData.project.junctionType === '3-WAY' && app.id === appData.project.tJunctionOmitted);
+                    return (
+                    <div 
+                      key={app.id} 
+                      className={`bg-white dark:bg-slate-900 border rounded-2xl p-5 shadow-sm space-y-4 transition-all ${
+                        isOmittedArm 
+                          ? 'border-dashed border-amber-300 dark:border-amber-700/80 bg-amber-50/20 dark:bg-amber-950/10 opacity-70' 
+                          : 'border-slate-200 dark:border-slate-800'
+                      }`}>
+                      
+                      {/* Notice Banner for Omitted Arm */}
+                      {isOmittedArm && (
+                        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-200 dark:border-amber-800 text-amber-800 dark:text-amber-300 p-2.5 rounded-xl text-xs flex items-center justify-between">
+                          <div className="flex items-center gap-2">
+                            <i className="fa-solid fa-ban text-amber-600"></i>
+                            <div>
+                              <span className="font-bold">Lengan Non-Aktif (Simpang 3 Lengan)</span>
+                              <div className="text-[11px] opacity-80">Lengan ini buntu/ditiadakan sehingga tidak dihitung dalam kapasitas & sinyal PKJI.</div>
+                            </div>
+                          </div>
+                          <span className="px-2 py-0.5 bg-amber-200 dark:bg-amber-800 text-amber-900 dark:text-amber-100 font-bold rounded text-[10px]">
+                            BUNTU
+                          </span>
+                        </div>
+                      )}
+
+                      {/* Approach Card Header */}
+                      <div className="flex items-center justify-between border-b border-slate-100 dark:border-slate-800 pb-3">
+                        <div className="flex items-center gap-2.5">
+                          <span className="w-8 h-8 rounded-lg bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300 font-black flex items-center justify-center text-sm">
+                            {app.id}
+                          </span>
+                          <div>
+                            <input
+                              type="text"
+                              value={app.name}
+                              onChange={(e) => handleApproachChange(app.id, 'name', e.target.value)}
+                              className="font-bold text-sm bg-transparent border-b border-transparent hover:border-slate-300 focus:border-blue-500 outline-none text-slate-800 dark:text-white"
+                            />
+                            <div className="text-[11px] text-slate-400">Pendekat {app.id === 'U' ? 'Utara' : app.id === 'S' ? 'Selatan' : app.id === 'T' ? 'Timur' : 'Barat'}</div>
+                          </div>
+                        </div>
+
+                        {/* Phase Assignment */}
+                        <div className="flex items-center gap-1.5 text-xs">
+                          <span className="text-slate-500 font-medium">Ditugaskan di:</span>
+                          <select
+                            value={app.phase}
+                            onChange={(e) => handleApproachChange(app.id, 'phase', parseInt(e.target.value))}
+                            className="px-2.5 py-1 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border border-blue-200 dark:border-blue-800 font-bold rounded-lg outline-none">
+                            {Array.from({ length: appData.project.numPhases }, (_, i) => i + 1).map(p => (
+                              <option key={p} value={p}>Fase {p}</option>
+                            ))}
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Approach Type & LTOR */}
+                      <div className="grid grid-cols-2 gap-3 text-xs">
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-slate-600 dark:text-slate-400 font-semibold">Tipe Pendekat</span>
+                            <button
+                              type="button"
+                              onClick={() => setGuidanceModal({ isOpen: true, type: 'approachType' })}
+                              className="text-amber-500 hover:text-amber-600 text-[10px]">
+                              💡 Info
+                            </button>
+                          </div>
+                          <select
+                            value={app.type}
+                            onChange={(e) => handleApproachChange(app.id, 'type', e.target.value)}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none text-slate-800 dark:text-slate-200">
+                            <option value="P">Terlindung (Protected / P)</option>
+                            <option value="O">Terlawan (Opposed / O)</option>
+                          </select>
+                        </div>
+
+                        <div>
+                          <div className="flex items-center justify-between mb-1">
+                            <span className="text-slate-600 dark:text-slate-400 font-semibold">Belok Kiri (LTOR)</span>
+                            <button
+                              type="button"
+                              onClick={() => setGuidanceModal({ isOpen: true, type: 'ltor' })}
+                              className="text-amber-500 hover:text-amber-600 text-[10px]">
+                              💡 Info
+                            </button>
+                          </div>
+                          <select
+                            value={app.ltor ? 'yes' : 'no'}
+                            onChange={(e) => handleApproachChange(app.id, 'ltor', e.target.value === 'yes')}
+                            className="w-full px-2.5 py-1.5 bg-slate-50 dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded-lg outline-none text-slate-800 dark:text-slate-200">
+                            <option value="no">Ikut Sinyal (LT In-Signal)</option>
+                            <option value="yes">Jalan Terus (LTOR)</option>
+                          </select>
+                        </div>
+                      </div>
+
+                      {/* Geometri Inputs */}
+                      <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-100 dark:border-slate-800 text-xs space-y-3">
+                        <div className="font-semibold text-slate-700 dark:text-slate-300">Geometri Pendekat:</div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div>
+                            <span className="text-slate-500">Lebar Masuk (We)</span>
+                            <div className="flex items-center mt-0.5">
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={app.We}
+                                onChange={(e) => handleApproachChange(app.id, 'We', parseFloat(e.target.value) || 3)}
+                                className="w-full px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                              />
+                              <span className="ml-1 text-slate-400">m</span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <span className="text-slate-500">Lebar Keluar (Wout)</span>
+                            <div className="flex items-center mt-0.5">
+                              <input
+                                type="number"
+                                step="0.1"
+                                value={app.Wout}
+                                onChange={(e) => handleApproachChange(app.id, 'Wout', parseFloat(e.target.value) || 3)}
+                                className="w-full px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                              />
+                              <span className="ml-1 text-slate-400">m</span>
+                            </div>
+                          </div>
+
+                          <div>
+                            <span className="text-slate-500">Gradien (%G)</span>
+                            <div className="flex items-center mt-0.5">
+                              <input
+                                type="number"
+                                step="0.5"
+                                value={app.gradient}
+                                onChange={(e) => handleApproachChange(app.id, 'gradient', parseFloat(e.target.value) || 0)}
+                                className="w-full px-2 py-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                              />
+                              <span className="ml-1 text-slate-400">%</span>
+                            </div>
+                          </div>
+                        </div>
+
+                        <div className="grid grid-cols-2 gap-3 pt-2 border-t border-slate-200/60 dark:border-slate-700/60">
+                          <label className="flex items-center gap-2 cursor-pointer text-slate-600 dark:text-slate-300">
+                            <input
+                              type="checkbox"
+                              checked={app.hasMedian}
+                              onChange={(e) => handleApproachChange(app.id, 'hasMedian', e.target.checked)}
+                              className="rounded text-blue-600 focus:ring-blue-500"
+                            />
+                            <span>Ada Median Jalan</span>
+                          </label>
+
+                          <div className="flex items-center gap-1.5">
+                            <span className="text-slate-500">Jarak Parkir:</span>
+                            <input
+                              type="number"
+                              value={app.parkingDist >= 999 ? 0 : app.parkingDist}
+                              placeholder="0 (bebas)"
+                              onChange={(e) => {
+                                const val = parseFloat(e.target.value);
+                                handleApproachChange(app.id, 'parkingDist', (!val || val <= 0) ? 999 : val);
+                              }}
+                              className="w-16 px-1.5 py-0.5 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded text-center"
+                            />
+                            <span className="text-slate-400">m</span>
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Arus Lalu Lintas (kend/jam) */}
+                      <div className="text-xs space-y-2">
+                        <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300">
+                          <span>Volume Kendaraan (kend/jam):</span>
+                          <span className="text-blue-600 dark:text-blue-400 font-bold">
+                            EMP SM: {EMP_PKJI[app.type].SM}
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-4 gap-2">
+                          <div className="bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg text-center">
+                            <div className="text-[10px] text-slate-500 uppercase font-semibold">KR (Mobil)</div>
+                            <input
+                              type="number"
+                              value={app.flows.KR}
+                              onChange={(e) => handleFlowChange(app.id, 'KR', e.target.value)}
+                              className="w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-bold"
+                            />
+                          </div>
+
+                          <div className="bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg text-center">
+                            <div className="text-[10px] text-slate-500 uppercase font-semibold">KB (Bus/Truk)</div>
+                            <input
+                              type="number"
+                              value={app.flows.KB}
+                              onChange={(e) => handleFlowChange(app.id, 'KB', e.target.value)}
+                              className="w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-bold"
+                            />
+                          </div>
+
+                          <div className="bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg text-center">
+                            <div className="text-[10px] text-slate-500 uppercase font-semibold">SM (Motor)</div>
+                            <input
+                              type="number"
+                              value={app.flows.SM}
+                              onChange={(e) => handleFlowChange(app.id, 'SM', e.target.value)}
+                              className="w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-bold"
+                            />
+                          </div>
+
+                          <div className="bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg text-center">
+                            <div className="text-[10px] text-slate-500 uppercase font-semibold">KT (Tak Motor)</div>
+                            <input
+                              type="number"
+                              value={app.flows.KT}
+                              onChange={(e) => handleFlowChange(app.id, 'KT', e.target.value)}
+                              className="w-full mt-1 bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-bold"
+                            />
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Proporsi Belok (LT, ST, RT %) */}
+                      <div className="text-xs space-y-2 pt-2 border-t border-slate-100 dark:border-slate-800">
+                        <div className="flex items-center justify-between font-semibold text-slate-700 dark:text-slate-300">
+                          <span>Proporsi Belok (%):</span>
+                          <span className={`text-[11px] font-bold ${
+                            (app.turns.LT + app.turns.ST + app.turns.RT) === 100 
+                              ? 'text-emerald-500' 
+                              : 'text-rose-500'
+                          }`}>
+                            Total: {app.turns.LT + app.turns.ST + app.turns.RT}%
+                          </span>
+                        </div>
+                        <div className="grid grid-cols-3 gap-2">
+                          <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg">
+                            <span className="text-slate-500">LT:</span>
+                            <input
+                              type="number"
+                              value={app.turns.LT}
+                              onChange={(e) => handleTurnChange(app.id, 'LT', e.target.value)}
+                              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-semibold"
+                            />
+                            <span>%</span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg">
+                            <span className="text-slate-500">ST:</span>
+                            <input
+                              type="number"
+                              value={app.turns.ST}
+                              onChange={(e) => handleTurnChange(app.id, 'ST', e.target.value)}
+                              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-semibold"
+                            />
+                            <span>%</span>
+                          </div>
+
+                          <div className="flex items-center gap-1.5 bg-slate-50 dark:bg-slate-800/60 p-2 rounded-lg">
+                            <span className="text-slate-500">RT:</span>
+                            <input
+                              type="number"
+                              value={app.turns.RT}
+                              onChange={(e) => handleTurnChange(app.id, 'RT', e.target.value)}
+                              className="w-full bg-white dark:bg-slate-800 border border-slate-200 dark:border-slate-700 rounded px-1 py-0.5 text-center font-semibold"
+                            />
+                            <span>%</span>
+                          </div>
+                        </div>
+                      </div>
+
+                    </div>
+                  );
+                })}
+                </div>
+
+                {/* Save / Load JSON Bar */}
+                <div className="bg-slate-100 dark:bg-slate-800/60 p-4 rounded-2xl flex flex-wrap items-center justify-between gap-3 text-xs">
+                  <div className="flex items-center gap-2 text-slate-600 dark:text-slate-300">
+                    <i className="fa-solid fa-floppy-disk text-blue-500"></i>
+                    <span>Simpan atau muat berkas konfigurasi proyek Anda:</span>
+                  </div>
+                  <div className="flex items-center gap-3">
+                    <button
+                      onClick={handleExportJSON}
+                      className="px-3 py-1.5 bg-white dark:bg-slate-800 border border-slate-300 dark:border-slate-700 rounded-lg hover:bg-slate-50 font-semibold shadow-sm transition-colors">
+                      <i className="fa-solid fa-download mr-1"></i> Unduh JSON Proyek
+                    </button>
+                    <label className="px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white rounded-lg font-semibold shadow-sm cursor-pointer transition-colors">
+                      <i className="fa-solid fa-upload mr-1"></i> Muat JSON Proyek
+                      <input
+                        type="file"
+                        accept=".json"
+                        onChange={handleImportJSON}
+                        className="hidden"
+                      />
+                    </label>
+                  </div>
+                </div>
+
+              </div>
+            )}
+
+            {/* TAB 2: PKJI 2023 SA SERIES FORMULIR TABLES */}
+            {activeTab === 'results' && (
+              <div className="space-y-6">
+                
+                {/* Sub-Tabs for SA-I through SA-V */}
+                <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 dark:border-slate-800 pb-2 no-print">
+                  {['SA-I', 'SA-II', 'SA-III', 'SA-IV', 'SA-V'].map(formId => (
+                    <button
+                      key={formId}
+                      onClick={() => setActiveFormTab(formId)}
+                      className={`px-4 py-2 rounded-xl text-xs font-bold transition-all ${
+                        activeFormTab === formId
+                          ? 'bg-blue-600 text-white shadow'
+                          : 'bg-white dark:bg-slate-800/80 text-slate-600 dark:text-slate-300 hover:bg-slate-100 border border-slate-200 dark:border-slate-700'
+                      }`}>
+                      Formulir {formId}
+                    </button>
+                  ))}
+                </div>
+
+                {/* --- FORMULIR SA-I --- */}
+                {(activeFormTab === 'SA-I' || window.matchMedia?.('print').matches) && (
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                    {/* Header Identik PKJI 2023 */}
+                    <div className="border-b-2 border-slate-900 dark:border-slate-100 pb-3 mb-4">
+                      <div className="text-xs uppercase font-mono tracking-widest text-slate-500">PEDOMAN KAPASITAS JALAN INDONESIA (PKJI 2023)</div>
+                      <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase">
+                        FORMULIR SA-I : DATA GEOMETRI, LINGKUNGAN, DAN PENGATURAN APILL
+                      </h2>
+                      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs mt-2 text-slate-600 dark:text-slate-400">
+                        <div><strong>Simpang:</strong> {appData.project.intersectionName}</div>
+                        <div><strong>Tipe Simpang:</strong> {appData.project.junctionType === '3-WAY' ? `Simpang 3 Lengan (T-Junction, Lengan ${appData.project.tJunctionOmitted} Buntu)` : 'Simpang 4 Lengan'}</div>
+                        <div><strong>Kota / Ukuran:</strong> {appData.project.city} ({appData.project.citySize})</div>
+                        <div><strong>Tipe Lingkungan:</strong> {appData.project.envType} ({appData.project.sideFriction})</div>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse table-pkji">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 uppercase font-bold border-y border-slate-300 dark:border-slate-700">
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700">Pendekat</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700">Nama Jalan</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700">Fase</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700">Tipe</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">Lebar Masuk We (m)</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">Lebar Keluar Wout (m)</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">Median</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">Gradien (%G)</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">Parkir (m)</th>
+                            <th className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">LTOR</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                          {calculationResults.approaches.map(app => (
+                            <tr key={app.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                              <td className="p-2.5 font-bold border border-slate-300 dark:border-slate-700 text-center">{app.id}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700">{app.name}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-bold">Fase {app.phase}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700">
+                                {app.type === 'P' ? 'Terlindung (P)' : 'Terlawan (O)'}
+                              </td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.We.toFixed(1)}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.Wout.toFixed(1)}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">
+                                {app.hasMedian ? `Ada (${app.medianWidth}m)` : 'Tidak'}
+                              </td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.gradient > 0 ? `+${app.gradient}` : app.gradient}%</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center">
+                                {app.parkingDist >= 999 ? 'Tidak Ada' : `${app.parkingDist} m`}
+                              </td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-semibold">
+                                {app.ltor ? 'Ya (Jalan Terus)' : 'Tidak (Ikut Sinyal)'}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <FormulaCard
+                      title="Formulir SA-I (Penentuan Geometri & Fase Sinyal)"
+                      formula="We = Lebar lajur masuk efektif pada garis henti | L = \sum (l_i) = \sum (kuning + all\_red)"
+                      substitute={`L = ${appData.project.numPhases} fase × (${appData.project.amberTime}s kuning + ${appData.project.allRedTime}s all-red) = ${calculationResults.totalLostTime} detik`}
+                      explanation="Karakteristik geometri (terutama lebar masuk We) menentukan arus jenuh dasar awal. Waktu hilang per fase (lost time) mencakup periode kuning dan merah semua untuk menjamin pengosongan simpang secara aman dari kendaraan yang telah masuk sebelum fase berikutnya dibuka."
+                      ruleRef="PKJI 2023 Bagian 2 (Simpang BerapiLL), Pasal 4.2"
+                    />
+                  </div>
+                )}
+
+                {/* --- FORMULIR SA-II --- */}
+                {(activeFormTab === 'SA-II' || window.matchMedia?.('print').matches) && (
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                    <div className="border-b-2 border-slate-900 dark:border-slate-100 pb-3 mb-4">
+                      <div className="text-xs uppercase font-mono tracking-widest text-slate-500">PEDOMAN KAPASITAS JALAN INDONESIA (PKJI 2023)</div>
+                      <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase">
+                        FORMULIR SA-II : ARUS LALU LINTAS & EKIVALEN MOBIL PENUMPANG (EMP)
+                      </h2>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse table-pkji">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 uppercase font-bold border-y border-slate-300 dark:border-slate-700">
+                            <th rowSpan="2" className="p-2 border border-slate-300 dark:border-slate-700 text-center">Pendekat</th>
+                            <th colSpan="3" className="p-2 border border-slate-300 dark:border-slate-700 text-center">Arus Kendaraan (kend/jam)</th>
+                            <th colSpan="3" className="p-2 border border-slate-300 dark:border-slate-700 text-center">Faktor EMP (PKJI 2023)</th>
+                            <th colSpan="3" className="p-2 border border-slate-300 dark:border-slate-700 text-center">Arus Lalu Lintas (smp/jam)</th>
+                            <th rowSpan="2" className="p-2 border border-slate-300 dark:border-slate-700 text-center">Total Arus Q (smp/jam)</th>
+                            <th colSpan="3" className="p-2 border border-slate-300 dark:border-slate-700 text-center">Distribusi Pergerakan (%)</th>
+                          </tr>
+                          <tr className="bg-slate-50 dark:bg-slate-800/60 text-slate-700 dark:text-slate-300 font-semibold border-b border-slate-300 dark:border-slate-700">
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">KR</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">KB</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">SM</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">KR</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">KB</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">SM</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">qKR</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">qKB</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">qSM</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">LT</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">ST</th>
+                            <th className="p-1.5 border border-slate-300 dark:border-slate-700 text-center">RT</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                          {calculationResults.approaches.map(app => (
+                            <tr key={app.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                              <td className="p-2 font-bold border border-slate-300 dark:border-slate-700 text-center">{app.id}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.flows.KR}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.flows.KB}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.flows.SM}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.emp.KR.toFixed(1)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.emp.KB.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-bold text-amber-600 dark:text-amber-400">{app.emp.SM.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{Math.round(app.qKR)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{Math.round(app.qKB)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{Math.round(app.qSM)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-black text-blue-600 dark:text-blue-400">{Math.round(app.qSmp)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center">{app.turns.LT}%</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center">{app.turns.ST}%</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center">{app.turns.RT}%</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <FormulaCard
+                      title="Konversi Arus Kendaraan ke Satuan Mobil Penumpang (smp)"
+                      formula="Q = (Q_{KR} \times EMP_{KR}) + (Q_{KB} \times EMP_{KB}) + (Q_{SM} \times EMP_{SM})"
+                      substitute="Contoh Pendekat U: Q = (420 × 1.0) + (45 × 1.30) + (1150 × 0.20) = 420 + 58.5 + 230 = 708.5 smp/jam"
+                      explanation="Angka Ekivalen Mobil Penumpang (EMP) mentransformasikan heterogenitas kendaraan menjadi satuan baku smp. Pada PKJI 2023, EMP Sepeda Motor pada pendekat terlindung bernilai 0.20, sedangkan pada pendekat terlawan bernilai 0.40 karena manuver menyeberang arus lurus lawan membutuhkan ruang dan waktu penerimaan celah (gap acceptance) yang lebih luas."
+                      ruleRef="PKJI 2023 Bagian 2, Tabel 2.1 (Nilai Ekivalen Mobil Penumpang Simpang BerapiLL)"
+                    />
+                  </div>
+                )}
+
+                {/* --- FORMULIR SA-III --- */}
+                {(activeFormTab === 'SA-III' || window.matchMedia?.('print').matches) && (
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                    <div className="border-b-2 border-slate-900 dark:border-slate-100 pb-3 mb-4">
+                      <div className="text-xs uppercase font-mono tracking-widest text-slate-500">PEDOMAN KAPASITAS JALAN INDONESIA (PKJI 2023)</div>
+                      <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase">
+                        FORMULIR SA-III : PENENTUAN WAKTU SINYAL DAN WAKTU SIKLUS (WEBSTER)
+                      </h2>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4 text-xs">
+                      <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <span className="text-slate-500 font-semibold">Waktu Hilang Total (L):</span>
+                        <div className="text-lg font-black text-slate-800 dark:text-white mt-0.5">{calculationResults.totalLostTime} detik</div>
+                        <div className="text-[11px] text-slate-400">L = &Sigma; (kuning + all-red)</div>
+                      </div>
+
+                      <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <span className="text-slate-500 font-semibold">Jumlah Rasio Arus Kritis (&Sigma;Y):</span>
+                        <div className="text-lg font-black text-blue-600 dark:text-blue-400 mt-0.5">{calculationResults.sumYcrit.toFixed(3)}</div>
+                        <div className="text-[11px] text-slate-400">Total IFR dari {appData.project.numPhases} fase</div>
+                      </div>
+
+                      <div className="bg-slate-50 dark:bg-slate-800/40 p-3 rounded-xl border border-slate-200 dark:border-slate-800">
+                        <span className="text-slate-500 font-semibold">Waktu Siklus Ditetapkan (c):</span>
+                        <div className="text-lg font-black text-emerald-600 dark:text-emerald-400 mt-0.5">{calculationResults.designCycleTime} detik</div>
+                        <div className="text-[11px] text-slate-400">Webster: {calculationResults.websterCycle} detik</div>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse table-pkji">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 uppercase font-bold border-y border-slate-300 dark:border-slate-700">
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Fase Sinyal</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700">Pendekat yang Melintas</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Pendekat Kritis</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Rasio Kritis (Ycrit)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Waktu Hijau Efektif g (detik)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Waktu Antarfase (s)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Rasio Hijau (g / c)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                          {calculationResults.signalPlan.phases.map(p => (
+                            <tr key={p.phase} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                              <td className="p-2.5 font-bold border border-slate-300 dark:border-slate-700 text-center">Fase {p.phase}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 font-semibold">{p.approaches.join(", ")}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-bold text-amber-600 dark:text-amber-400">Pendekat {p.criticalAppId}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono">{p.Ycrit.toFixed(3)}</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono font-black text-emerald-600 dark:text-emerald-400">{p.greenTime} s</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono">{appData.project.amberTime}s K + {appData.project.allRedTime}s M</td>
+                              <td className="p-2.5 border border-slate-300 dark:border-slate-700 text-center font-mono font-bold">{(p.greenTime / calculationResults.designCycleTime).toFixed(3)}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <FormulaCard
+                      title="Persamaan Waktu Siklus Webster & Alokasi Waktu Hijau"
+                      formula="c = \frac{1,5 \times L + 5}{1 - \sum Y_{crit}} \quad \text{dan} \quad g_i = (c - L) \times \frac{Y_{crit, i}}{\sum Y_{crit}}"
+                      substitute={`c = (1.5 × ${calculationResults.totalLostTime} + 5) / (1 - ${calculationResults.sumYcrit.toFixed(3)}) = ${calculationResults.websterCycle} detik`}
+                      explanation="Persamaan Webster digunakan untuk meminimalkan tundaan total di persimpangan dengan menyeimbangkan rasio arus terhadap kapasitas pada setiap fase kritis. Pembagian waktu hijau efektif (gi) dilakukan secara proporsional sesuai rasio arus kritis masing-masing fase agar seluruh pendekat mencapai derajat kejenuhan yang seragam."
+                      ruleRef="PKJI 2023 Bagian 2, Pasal 4.4 (Penentuan Waktu Sinyal)"
+                    />
+                  </div>
+                )}
+
+                {/* --- FORMULIR SA-IV --- */}
+                {(activeFormTab === 'SA-IV' || window.matchMedia?.('print').matches) && (
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                    <div className="border-b-2 border-slate-900 dark:border-slate-100 pb-3 mb-4">
+                      <div className="text-xs uppercase font-mono tracking-widest text-slate-500">PEDOMAN KAPASITAS JALAN INDONESIA (PKJI 2023)</div>
+                      <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase">
+                        FORMULIR SA-IV : PERHITUNGAN KAPASITAS APILL (ARUS JENUH & FAKTOR KOREKSI)
+                      </h2>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse table-pkji">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 uppercase font-bold border-y border-slate-300 dark:border-slate-700">
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Pendekat</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Lebar We (m)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">S0 Dasar</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Fcs (Kota)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Fsf (Hambatan)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">FG (Gradien)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Fp (Parkir)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">FRT (Kanan)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">FLT (Kiri)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">S Terkoreksi</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">g / c</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center font-black">Kapasitas C (smp/jam)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                          {calculationResults.approaches.map(app => (
+                            <tr key={app.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                              <td className="p-2 font-bold border border-slate-300 dark:border-slate-700 text-center">{app.id}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.We.toFixed(1)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{Math.round(app.S0)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.Fcs.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.Fsf.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.FG.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.Fp.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.FRT.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.FLT.toFixed(2)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-bold text-blue-700 dark:text-blue-300">{Math.round(app.S)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.greenRatio.toFixed(3)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-black text-emerald-600 dark:text-emerald-400">{app.C}</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <FormulaCard
+                      title="Perhitungan Arus Jenuh Terkoreksi & Kapasitas Pendekat"
+                      formula="S = S_0 \times F_{cs} \times F_{sf} \times F_G \times F_p \times F_{RT} \times F_{LT} \quad \text{dan} \quad C = S \times \frac{g}{c}"
+                      substitute="Contoh Pendekat U: S = 4200 × 0.88 × 0.92 × 1.00 × 1.00 × 1.00 × 0.976 = 3318 skr/jam hijau | C = 3318 × (32/88) = 1206 smp/jam"
+                      explanation="Arus jenuh dasar (S0) merepresentasikan laju pelepasan antrean kendaraan ideal saat lampu hijau. Faktor-faktor koreksi memperhitungkan penurunan kinerja riil akibat gesekan samping pejalan kaki/toko (Fsf), kemiringan tanjakan jalan (FG), parkir tepi jalan (Fp), dan pengaruh hambatan belok (FRT, FLT). Kapasitas (C) adalah perkalian arus jenuh dengan fraksi alokasi waktu hijau (g/c)."
+                      ruleRef="PKJI 2023 Bagian 2, Pasal 4.3 (Arus Jenuh & Kapasitas)"
+                    />
+                  </div>
+                )}
+
+                {/* --- FORMULIR SA-V --- */}
+                {(activeFormTab === 'SA-V' || window.matchMedia?.('print').matches) && (
+                  <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                    <div className="border-b-2 border-slate-900 dark:border-slate-100 pb-3 mb-4">
+                      <div className="text-xs uppercase font-mono tracking-widest text-slate-500">PEDOMAN KAPASITAS JALAN INDONESIA (PKJI 2023)</div>
+                      <h2 className="text-lg font-black text-slate-900 dark:text-white uppercase">
+                        FORMULIR SA-V : EVALUASI KINERJA, DERAJAT KEJENUHAN, TUNDAAN & TINGKAT PELAYANAN (LOS)
+                      </h2>
+                    </div>
+
+                    {/* Summary Result Banner */}
+                    <div className="mb-5 p-4 rounded-xl border border-slate-200 dark:border-slate-800 bg-slate-50 dark:bg-slate-800/40 flex flex-wrap items-center justify-between gap-4">
+                      <div>
+                        <div className="text-xs font-semibold text-slate-500 uppercase">Tingkat Pelayanan Keseluruhan Simpang (LOS):</div>
+                        <div className="flex items-center gap-3 mt-1">
+                          <span className={`px-4 py-1 rounded-xl text-xl font-black ${calculationResults.losColor}`}>
+                            LEVEL {calculationResults.LOS}
+                          </span>
+                          <span className="text-sm font-bold text-slate-700 dark:text-slate-200">
+                            {calculationResults.losDesc}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="text-xs font-semibold text-slate-500 uppercase">Tundaan Rata-rata Simpang (T):</div>
+                        <div className="text-2xl font-black text-blue-600 dark:text-blue-400 mt-0.5">
+                          {calculationResults.averageIntersectionDelay.toFixed(2)} <span className="text-xs font-normal text-slate-500">detik/smp</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-xs text-left border-collapse table-pkji">
+                        <thead>
+                          <tr className="bg-slate-100 dark:bg-slate-800 text-slate-800 dark:text-slate-200 uppercase font-bold border-y border-slate-300 dark:border-slate-700">
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Pendekat</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Arus Q (smp/jam)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Kapasitas C</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Derajat Kejenuhan (DJ)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Tundaan Lalu Lintas DT (s)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Tundaan Geometrik DG (s)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center font-bold">Tundaan Total T (s)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Antrean NQ (smp)</th>
+                            <th className="p-2 border border-slate-300 dark:border-slate-700 text-center">Panjang Antrean PA (m)</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-slate-200 dark:divide-slate-800">
+                          {calculationResults.approaches.map(app => (
+                            <tr key={app.id} className="hover:bg-slate-50 dark:hover:bg-slate-800/40">
+                              <td className="p-2 font-bold border border-slate-300 dark:border-slate-700 text-center">{app.id}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{Math.round(app.Q)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.C}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-black">
+                                <span className={`px-2 py-0.5 rounded ${
+                                  app.DJ > 0.85 
+                                    ? 'bg-rose-100 text-rose-700 dark:bg-rose-950/60 dark:text-rose-300' 
+                                    : 'bg-emerald-100 text-emerald-800 dark:bg-emerald-950/60 dark:text-emerald-300'
+                                }`}>
+                                  {app.DJ.toFixed(2)}
+                                </span>
+                              </td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.DT.toFixed(1)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.DG.toFixed(1)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-bold text-blue-600 dark:text-blue-400">{app.T.toFixed(1)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono">{app.NQtotal.toFixed(1)}</td>
+                              <td className="p-2 border border-slate-300 dark:border-slate-700 text-center font-mono font-semibold">{Math.round(app.queueLength)} m</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+
+                    <FormulaCard
+                      title="Evaluasi Derajat Kejenuhan (DJ), Tundaan (Delay) & Panjang Antrean"
+                      formula="DJ = \frac{Q}{C} \quad ; \quad T_i = DT_i + DG_i \quad ; \quad T_{simpang} = \frac{\sum (Q_i \times T_i)}{\sum Q_i}"
+                      substitute={`Tundaan Simpang = Total (${Math.round(calculationResults.approaches.reduce((acc,a)=>acc+(a.Q*a.T),0))} smp.detik) / Total (${Math.round(calculationResults.approaches.reduce((acc,a)=>acc+a.Q,0))} smp) = ${calculationResults.averageIntersectionDelay.toFixed(2)} detik/smp`}
+                      explanation="Derajat kejenuhan (DJ) harus dipertahankan ≤ 0.85 sesuai standar PKJI 2023 untuk mencegah antrean meluber (spill-back). Tundaan lalu lintas (DT) dihitung dengan formula Akçelik yang memadukan tundaan teratur siklus sinyal dengan tundaan stokastik akibat fluktuasi acak arus kendaraan saat mendekati kejenuhan."
+                      ruleRef="PKJI 2023 Bagian 2, Pasal 4.5 (Evaluasi Kinerja Simpang APILL)"
+                    />
+                  </div>
+                )}
+
+              </div>
+            )}
+
+            {/* TAB 3: 2D TOP-DOWN SIMULATION */}
+            {activeTab === 'simulation' && (
+              <div className="space-y-6">
+                <div className="bg-white dark:bg-slate-900 border border-slate-200 dark:border-slate-800 rounded-2xl p-6 shadow-sm">
+                  <div className="flex flex-wrap items-center justify-between gap-3 mb-4">
+                    <div>
+                      <h2 className="text-base font-bold text-slate-800 dark:text-white flex items-center gap-2">
+                        <i className="fa-solid fa-gamepad text-blue-500"></i>
+                        Simulasi Visual Top-Down Simpang APILL (PKJI 2023)
+                      </h2>
+                      <p className="text-xs text-slate-500 dark:text-slate-400 mt-0.5">
+                        Lampu APILL dan pergerakan kendaraan bergerak sinkron secara real-time dengan alokasi waktu siklus Webster Formulir SA-III.
+                      </p>
+                    </div>
+
+                    <div className="flex items-center gap-2 text-xs">
+                      <span className="px-2.5 py-1 bg-slate-100 dark:bg-slate-800 rounded-lg font-semibold text-slate-700 dark:text-slate-300">
+                        Total Siklus (c): {calculationResults.designCycleTime}s
+                      </span>
+                      <span className={`px-2.5 py-1 rounded-lg font-bold ${calculationResults.losColor}`}>
+                        LOS {calculationResults.LOS}
+                      </span>
+                    </div>
+                  </div>
+
+                  <TopDownSimulation
+                    approaches={calculationResults.approaches}
+                    signalPlan={calculationResults.signalPlan}
+                    cycleTime={calculationResults.designCycleTime}
+                    junctionType={appData.project.junctionType || '4-WAY'}
+                    tJunctionOmitted={appData.project.tJunctionOmitted || 'B'}
+                  />
+
+                  {/* Approach Live Status Table */}
+                  <div className="mt-6 border-t border-slate-100 dark:border-slate-800 pt-4">
+                    <h3 className="text-xs font-bold text-slate-700 dark:text-slate-300 mb-3 uppercase tracking-wider">
+                      Status Operasional Tiap Lengan Simpang:
+                    </h3>
+                    <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+                      {calculationResults.approaches.map(app => (
+                        <div 
+                          key={app.id}
+                          className="bg-slate-50 dark:bg-slate-800/50 p-3 rounded-xl border border-slate-200 dark:border-slate-800 text-xs space-y-1">
+                          <div className="flex items-center justify-between">
+                            <span className="font-bold text-slate-800 dark:text-white">Lengan {app.id} ({app.name.split(' ')[0]})</span>
+                            <span className="px-1.5 py-0.5 bg-blue-100 dark:bg-blue-900/50 text-blue-700 dark:text-blue-300 rounded font-bold text-[10px]">
+                              Fase {app.phase}
+                            </span>
+                          </div>
+                          <div className="text-slate-500 flex justify-between">
+                            <span>Waktu Hijau (g):</span>
+                            <span className="font-semibold text-slate-700 dark:text-slate-200">{app.g} detik</span>
+                          </div>
+                          <div className="text-slate-500 flex justify-between">
+                            <span>Derajat Kejenuhan:</span>
+                            <span className={`font-bold ${app.DJ > 0.85 ? 'text-rose-500' : 'text-emerald-500'}`}>
+                              {app.DJ.toFixed(2)}
+                            </span>
+                          </div>
+                          <div className="text-slate-500 flex justify-between">
+                            <span>Panjang Antrean:</span>
+                            <span className="font-semibold text-slate-700 dark:text-slate-200">{Math.round(app.queueLength)} m</span>
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
+
+          </main>
+
+          {/* ACADEMIC FOOTER */}
+          <footer className="bg-white dark:bg-slate-900 border-t border-slate-200 dark:border-slate-800 py-6 mt-12 text-center text-xs text-slate-500 dark:text-slate-400 no-print">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 space-y-2">
+              <div className="flex items-center justify-center gap-2">
+                <img
+                  src="https://upload.wikimedia.org/wikipedia/commons/4/43/Logo_UNTIDAR_%28Universitas_Tidar%29_Magelang.png"
+                  alt="UNTIDAR"
+                  className="h-5 w-auto object-contain"
+                  onError={(e) => { e.target.style.display = 'none'; }}
+                />
+                <span className="font-bold text-slate-700 dark:text-slate-200">
+                  SIMPASI • Universitas Tidar (UNTIDAR) Magelang
+                </span>
+              </div>
+              <p>
+                Dikembangkan berdasarkan <strong>Pedoman Kapasitas Jalan Indonesia (PKJI 2023)</strong> • Ditjen Bina Marga Kementerian PUPR
+              </p>
+              <p className="text-[11px] text-slate-400">
+                Fakultas Teknik - Program Studi Teknik Sipil Universitas Tidar. Sepenuhnya interaktif, transparan, dan siap cetak formulir SA Series.
+              </p>
+            </div>
+          </footer>
+        </div>
+      );
+    }
+
+    // Render React Root
+    const root = ReactDOM.createRoot(document.getElementById('root'));
+    root.render(<App />);
+  </script>
+</body>
+</html>
